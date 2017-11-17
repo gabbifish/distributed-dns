@@ -1,0 +1,3 @@
+[submodule "PySyncObj"]
+	path = PySyncObj
+	url = https://github.com/bakwc/PySyncObj.git
