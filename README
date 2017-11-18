@@ -1,0 +1,7 @@
+// TODO:
+1. Ensure that other nodes can also set in the case principal (battery-test.py)
+   goes down.
+2. Each backup needs to copy new additions to dict into local storage.
+3. Write serializer that saves new zone file entries on txt file (this is
+   our version of "writing to disk")
+4. Write DNS on top (lol) -- MORE SPECIFICS TO COME
