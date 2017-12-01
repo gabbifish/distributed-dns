@@ -5,3 +5,6 @@
 3. Write serializer that saves new zone file entries on txt file (this is
    our version of "writing to disk")
 4. Write DNS on top (lol) -- MORE SPECIFICS TO COME
+5. Use one .py file for DNS, and let commandline args define if it is primary
+   as well as its configs (self IP addr and port, list of other cluster IP a
+   addrs and ports).
