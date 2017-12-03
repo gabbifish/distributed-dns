@@ -1,10 +1,16 @@
 // TODO:
-1. Ensure that other nodes can also set in the case principal (battery-test.py)
-   goes down.
-2. Each backup needs to copy new additions to dict into local storage.
-3. Write serializer that saves new zone file entries on txt file (this is
+1. Write serializer that saves new zone file entries on txt file (this is
    our version of "writing to disk")
-4. Write DNS on top (lol) -- MORE SPECIFICS TO COME
-5. Use one .py file for DNS, and let commandline args define if it is primary
-   as well as its configs (self IP addr and port, list of other cluster IP a
-   addrs and ports).
+2. Write DNS on top.
+    - Parse zonefile and store entries in list (Emre: let me know how to choose
+    to do this! Using a class sounds great.)
+    - Need to write a Record class responsible for finding and formatting
+      DNS records.
+    - Ensure that when a DNS request is made, and the current node does not
+      have an entry for that requested hostname in its zone file, use
+      distributed_dict over RAFT to ask for information about the missing file.
+      If other nodes do not propagate information about the hostname's mapping,
+      return NX record. (Gabbi)
+    - Ensure dnspython or dnslib libraries include a DNS server implementation
+      which we could pass our resolver into; this DNSserver will handle requests
+      done over tools like dig, and would be fantastic for demoing purposes!

@@ -15,6 +15,7 @@ class Resolver:
         self.node, self.other_nodes = self.configure()
 
         self.records = self.init_records()
+        self.distributed_dict = self.init_distributed_dict()
 
     # Called upon resolver initialization; gets self_node ip:port and list of
     # other ip:ports for other nodes in cluster.
@@ -39,8 +40,8 @@ class Resolver:
         return zone_fd
         # TODO: FINISH
 
+    # Next, set up distributed dict for requests not yet written locally.
     def init_distributed_dict(self):
-        # Next, set up distributed dict for requests not yet written locally.
         distributed_dict = ReplDict()
         config = SyncObjConf(appendEntriesUseBatch=True)
         syncObj = SyncObj(self.node, self.other_nodes, consumers=[distributed_dict], conf=config)
