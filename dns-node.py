@@ -1,9 +1,12 @@
+import argparse
+import base64
+from cStringIO import StringIO
+from hashlib import sha256
+import json
 from pysyncobj import SyncObj
 from pysyncobj import SyncObjConf
 from pysyncobj.batteries import ReplCounter, ReplDict
 import time
-import argparse
-import json
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
@@ -78,48 +81,74 @@ class Resolver:
             line = line.rstrip()
             yield line
 
+    def _getUniqueKey(self, rrheader):
+        encoder = StringIO()
+        rdata = rrheader.encode(encoder)
+        m = sha256()
+        m.update(encoder.getvalue())
+        hashval = m.digest()
+        return repr((str(rrheader.name), 
+                    rrheader.type, 
+                    base64.b64encode(hashval)))
+
+    def _getKey(self, rrheader):
+        rdata = (rrheader.name, rrheader.type)
+        m = sha256()
+        m.update(repr(rdata))
+        hashval = m.digest()
+        return repr((str(rrheader.name), 
+                    rrheader.type, 
+                    base64.b64encode(hashval)))
+
     # Read in entries from zone file and store locally.
     def _loadZones(self):
-        records = []
+        records = {}
         for line in self._zoneLines():
-            try:
-                line_components = line.split(None, 2)
-                # Case if independent record
-                if len(line_components) == 3:
-                    rname, rtype, rvalue = line_components
-                    # # if rvalue is a list, make sure to store it as one!
-                    payload = None
-                    if rvalue.startswith("["):
-                        rvalue = json.loads(rvalue)
-
-                    # create correct payload
-                    payload = None
-                    if rtype == "A":
-                        payload = dns.Record_A(address=rvalue)
-                    elif rtype == "CNAME":
-                        payload = dns.Record_CNAME(name=rvalue)
-                    elif rtype == "MX":
-                        payload = dns.Record_MX(name=rvalue[0], preference=int(rvalue[1]))
-                    elif rtype == "NS":
-                        payload = dns.Record_NS(name=rvalue)
-                    elif rtype == "SOA":
-                        payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
-                    elif rtype == "TXT":
-                        payload = dns.Record_TXT(data=[rvalue])
-                        # UGHGHHG still have to figure out how to
-                        # handle multiple line TXT inputs.
-
-                    new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
-                    records.append(new_rr)
-                # Case if line is continuation of other record (e.g. long TXT)
-                # elif len(line_components) == 1:
-
-                # Case neither of above--odd line
+        #try:
+            line_components = line.split(None, 2)
+            # Case if independent record
+            if len(line_components) == 3:
+                rname, rtype, rvalue = line_components
+                # # if rvalue is a list, make sure to store it as one!
+                payload = None
+                if rvalue.startswith("["):
+                    rvalue = json.loads(rvalue)
+                # create correct payload
+                payload = None
+                if rtype == "A":
+                    payload = dns.Record_A(address=rvalue)
+                elif rtype == "CNAME":
+                    payload = dns.Record_CNAME(name=rvalue)
+                elif rtype == "MX":
+                    payload = dns.Record_MX(name=rvalue[0], preference=int(rvalue[1]))
+                elif rtype == "NS":
+                    payload = dns.Record_NS(name=rvalue)
+                elif rtype == "SOA":
+                    payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
+                elif rtype == "TXT":
+                    payload = dns.Record_TXT(data=[rvalue])
+                    # UGHGHHG still have to figure out how to
+                    # handle multiple line TXT inputs.
+                new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
+                key = self._getUniqueKey(new_rr)
+                key2 = self._getKey(new_rr)
+                strio = StringIO()
+                new_rr.encode(strio)
+                print str(new_rr)
+                print strio.getvalue()
+                print key
+                print key2
+                if records.get(key2) is None:
+                    records[key2] = [(new_rr, key)]
                 else:
-                    raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
-            except Exception as e:
-                raise RuntimeError("line '%s' is incorrectly formatted." % line)
-
+                    records[key2].append((new_rr, key))
+            # Case if line is continuation of other record (e.g. long TXT)
+            # elif len(line_components) == 1:
+            # Case neither of above--odd line
+            else:
+                raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
+            #except Exception as e:
+            #    raise RuntimeError("line '%s' is incorrectly formatted." % line)
         return records
 
     '''
