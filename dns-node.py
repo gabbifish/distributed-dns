@@ -4,6 +4,8 @@ from pysyncobj.batteries import ReplCounter, ReplDict
 import time
 import argparse
 import json
+
+from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
 query_types = {
@@ -23,14 +25,14 @@ class Resolver:
         self.zone_file = zone_file
         self.config_file = config_file
 
-        self.node, self.other_nodes = self.configure()
+        self.node, self.other_nodes = self._configure()
 
-        self.records = self.load_zones()
-        self.distributed_dict = self.init_distributed_dict()
+        self.records = self._loadZones()
+        # self.distributed_dict = self._initDistributedDict()
 
     # Called upon resolver initialization; gets self_node ip:port and list of
     # other ip:ports for other nodes in cluster.
-    def configure(self):
+    def _configure(self):
         configs = json.load(open(self.config_file))
 
         # Get node specified on commandline.
@@ -44,7 +46,7 @@ class Resolver:
 
         return node, other_nodes
 
-    def zone_lines(self):
+    def _zoneLines(self):
         zone_fd = open(self.zone_file)
         for line in zone_fd:
             if line.startswith("#"):
@@ -53,9 +55,9 @@ class Resolver:
             yield line
 
     # Read in entries from zone file and store locally.
-    def load_zones(self):
+    def _loadZones(self):
         records = []
-        for line in self.zone_lines():
+        for line in self._zoneLines():
             try:
                 line_components = line.split(None, 2)
                 # Case if independent record
@@ -79,9 +81,7 @@ class Resolver:
                     elif rtype == "SOA":
                         payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
                     elif rtype == "TXT":
-                        freeform = []
-                        freeform.append(rvalue)
-                        payload = dns.Record_TXT(data=freeform)
+                        payload = dns.Record_TXT(data=[rvalue])
                         # UGHGHHG still have to figure out how to
                         # handle multiple line TXT inputs.
 
@@ -96,11 +96,10 @@ class Resolver:
             except Exception as e:
                 raise RuntimeError("line '%s' is incorrectly formatted." % line)
 
-        for record in records:
-            print record.payload
+        return records
 
     # Next, set up distributed dict for requests not yet written locally.
-    def init_distributed_dict(self):
+    def _initDistributedDict(self):
         distributed_dict = ReplDict()
         config = SyncObjConf(appendEntriesUseBatch=True)
         syncObj = SyncObj(self.node, self.other_nodes, consumers=[distributed_dict], conf=config)
@@ -111,11 +110,21 @@ class Resolver:
         return distributed_dict
 
     # TODO: DNS record lookup (if in zone list) OR NX record
-    # def query(self, query, timeout=None):
+    def _recordLookup(self, query):
+        name = query.name.name
+        qtype = query.type
         # check if mapping in zonefile init_records
-
+        answers = []
+        authority = []
+        additional = []
+        for rr in self.records:
+            if rr.name.name == name and rr.type == qtype:
+                answers.append(rr)
         # if not, return NX record (to maintain availability)
+        return answers, authority, additional
 
+    def query(self, query, timeout=None):
+        return defer.succeed(self._recordLookup(query))
     # called from separate thread; if new mapping is entered via commandline,
     # ensure that it is added to the distributed_dict!
     # def add_entry(self):
@@ -137,3 +146,18 @@ if __name__ =='__main__':
 
     # Start resolver
     resolver = Resolver(node_name, zone_file, config_file)
+    """
+    Run the server.
+    """
+    factory = server.DNSServerFactory(
+        clients=[resolver, client.Resolver(resolv='/etc/resolv.conf')]
+    )
+
+    protocol = dns.DNSDatagramProtocol(controller=factory)
+
+    port = 10053
+    reactor.listenUDP(port, protocol)
+    reactor.listenTCP(port, factory)
+
+    print "Starting DNS server on port %d..." % port
+    reactor.run()
