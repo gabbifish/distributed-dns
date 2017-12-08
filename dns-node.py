@@ -91,13 +91,13 @@ class Resolver:
                     rrheader.type, 
                     base64.b64encode(hashval)))
 
-    def _getKey(self, rrheader):
-        rdata = (rrheader.name, rrheader.type)
+    def _getKey(self, name, qtype):
+        rdata = (name, qtype)
         m = sha256()
         m.update(repr(rdata))
         hashval = m.digest()
-        return repr((str(rrheader.name), 
-                    rrheader.type, 
+        return repr((str(name), 
+                    qtype, 
                     base64.b64encode(hashval)))
 
     # Read in entries from zone file and store locally.
@@ -130,17 +130,21 @@ class Resolver:
                     # UGHGHHG still have to figure out how to
                     # handle multiple line TXT inputs.
                 new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
-                key = self._getUniqueKey(new_rr)
-                key2 = self._getKey(new_rr)
+                fullkey = self._getUniqueKey(new_rr)
+                prefixkey = self._getKey(new_rr.name.name, new_rr.type)
+                
                 strio = StringIO()
                 new_rr.encode(strio)
                 print str(new_rr)
                 print strio.getvalue()
-                print key
-                print key2
-                if records.get(key2) is None:
-                    records[key2] = [(new_rr, key)]
-                    # TODO:
+                print fullkey
+                print prefixkey
+
+                if records.get(prefixkey) is None:
+                    records[prefixkey] = [(new_rr, fullkey)]
+                else:
+                    records[prefixkey].append((new_rr, fullkey))
+                # TODO:
                     # 1) encode new_rr
                     # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
                     # 3) to distributed_dict of hashkey->RR, add hashkey->new_rr
@@ -149,8 +153,6 @@ class Resolver:
                 # elif len(line_components) == 1:
 
                 # Case neither of above--odd line
-                else:
-                    records[key2].append((new_rr, key))
             # Case if line is continuation of other record (e.g. long TXT)
             # elif len(line_components) == 1:
             # Case neither of above--odd line
@@ -190,10 +192,11 @@ class Resolver:
         answers = []
         authority = []
         additional = []
-        for rr in self.records:
-            if rr.name.name == name and rr.type == qtype:
-                answers.append(rr)
-
+        if records.get(self._key(name, qtype)):
+            answers.append(rr[0])
+        # for rr in self.records:
+        #     if rr.name.name == name and rr.type == qtype:
+        #         answers.append(rr)
         # Next, attempt to get it from distributed_dict
         # of hashkeys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
