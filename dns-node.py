@@ -4,48 +4,72 @@ from pysyncobj.batteries import ReplCounter, ReplDict
 import time
 import argparse
 import json
-
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
-query_types = {
-    "A" : dns.A,
-    "CNAME" : dns.CNAME,
-    "MX" : dns.MX,
-    "NS" : dns.NS,
-    "SOA" : dns.SOA,
-    "TXT" : dns.TXT
-}
-
 class Resolver:
 
-    # Initialize resolver
+    '''
+    Initialize resolver
+    '''
     def __init__(self, node_name, zone_file, config_file):
         self.node_name = node_name
         self.zone_file = zone_file
         self.config_file = config_file
+        self.query_types = {
+            "A" : dns.A,
+            "CNAME" : dns.CNAME,
+            "MX" : dns.MX,
+            "NS" : dns.NS,
+            "SOA" : dns.SOA,
+            "TXT" : dns.TXT
+        }
 
-        self.node, self.other_nodes = self._configure()
+        self.node, self.other_nodes, self.query_port = self._configure()
 
         self.records = self._loadZones()
-        # self.distributed_dict = self._initDistributedDict()
+        self.distributed_dict = self._initDistributedDict()
 
-    # Called upon resolver initialization; gets self_node ip:port and list of
-    # other ip:ports for other nodes in cluster.
+    '''
+    PRIVATE FUNC
+    func _configure() is called upon resolver initialization; returns self_node
+    ip:port and list of other ip:ports for other nodes in cluster.
+    '''
     def _configure(self):
-        configs = json.load(open(self.config_file))
+        config_fd = open(self.config_file)
+        configs = json.load(config_fd)
 
         # Get node specified on commandline.
-        node = configs["nodes"][self.node_name]
+        node = configs["nodes"][self.node_name]["raft_loc"]
 
         # Get list of other nodes in cluster.
         other_nodes = []
         for k in configs["nodes"].keys():
             if k != self.node_name:
-                other_nodes.append(configs["nodes"][k])
+                other_nodes.append(configs["nodes"][k]["raft_loc"])
 
-        return node, other_nodes
+        # Get query port
+        query_loc = configs["nodes"][self.node_name]["query_loc"]
+        query_port = int(query_loc.split(":")[1])
 
+        config_fd.close()
+
+        return node, other_nodes, query_port
+
+    '''
+    PUBLIC FUNC
+    func getQueryPort() returns this node's query port--the one used by
+    command-line tools like dig (e.g. 'dig -p 10053 @127.0.0.1 example.com' if
+    query_port is 10053 in config file)
+    '''
+    def getQueryPort(self):
+        return self.query_port
+
+    '''
+    PRIVATE FUNC
+    func _zoneLines() processes lines in the zonefile, ignoring commented ones
+    and yielding entries stripped of external whitespace.
+    '''
     def _zoneLines(self):
         zone_fd = open(self.zone_file)
         for line in zone_fd:
@@ -85,7 +109,7 @@ class Resolver:
                         # UGHGHHG still have to figure out how to
                         # handle multiple line TXT inputs.
 
-                    new_rr = dns.RRHeader(name=rname, type=query_types[rtype], payload=payload)
+                    new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
                     records.append(new_rr)
                 # Case if line is continuation of other record (e.g. long TXT)
                 # elif len(line_components) == 1:
@@ -98,18 +122,28 @@ class Resolver:
 
         return records
 
-    # Next, set up distributed dict for requests not yet written locally.
+    '''
+    PRIVATE FUNC
+    func _initDistributedDict() sets up distributed dict for requests not yet
+    written locally.
+    '''
     def _initDistributedDict(self):
         distributed_dict = ReplDict()
         config = SyncObjConf(appendEntriesUseBatch=True)
-        syncObj = SyncObj(self.node, self.other_nodes, consumers=[distributed_dict], conf=config)
+        syncObj = SyncObj(self.node, self.other_nodes,
+        consumers=[distributed_dict], conf=config)
 
         while not syncObj.isReady():
             continue
+
         # now distributed_dict is ready!
+        print "Raft initialized..."
         return distributed_dict
 
-    # TODO: DNS record lookup (if in zone list) OR NX record
+    '''
+    PRIVATE FUNC
+    func _recordLookup() looks up RRs that match a query.
+    '''
     def _recordLookup(self, query):
         name = query.name.name
         qtype = query.type
@@ -120,13 +154,21 @@ class Resolver:
         for rr in self.records:
             if rr.name.name == name and rr.type == qtype:
                 answers.append(rr)
-        # if not, return NX record (to maintain availability)
+        # TODO if not, return NX record (to maintain availability)
+
         return answers, authority, additional
 
+    '''
+    PUBLIC FUNC
+    func query() returns RRs that match a query.
+    '''
     def query(self, query, timeout=None):
         return defer.succeed(self._recordLookup(query))
-    # called from separate thread; if new mapping is entered via commandline,
-    # ensure that it is added to the distributed_dict!
+
+    '''
+    TODO: called from separate thread; if new mapping is entered via
+    commandline, ensure that it is added to the distributed_dict!
+    '''
     # def add_entry(self):
 
 
@@ -146,16 +188,15 @@ if __name__ =='__main__':
 
     # Start resolver
     resolver = Resolver(node_name, zone_file, config_file)
-    """
-    Run the server.
-    """
+    # get port for resolver
+    port = resolver.getQueryPort()
+
     factory = server.DNSServerFactory(
         clients=[resolver, client.Resolver(resolv='/etc/resolv.conf')]
     )
-
     protocol = dns.DNSDatagramProtocol(controller=factory)
 
-    port = 10053
+    # Run the server on provided port.
     reactor.listenUDP(port, protocol)
     reactor.listenTCP(port, factory)
 
