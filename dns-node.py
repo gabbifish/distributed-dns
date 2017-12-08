@@ -140,6 +140,15 @@ class Resolver:
                 print key2
                 if records.get(key2) is None:
                     records[key2] = [(new_rr, key)]
+                    # TODO:
+                    # 1) encode new_rr
+                    # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
+                    # 3) to distributed_dict of hashkey->RR, add hashkey->new_rr
+
+                # Case if line is continuation of other record (e.g. long TXT)
+                # elif len(line_components) == 1:
+
+                # Case neither of above--odd line
                 else:
                     records[key2].append((new_rr, key))
             # Case if line is continuation of other record (e.g. long TXT)
@@ -162,11 +171,12 @@ class Resolver:
         syncObj = SyncObj(self.node, self.other_nodes,
         consumers=[distributed_dict], conf=config)
 
+        print "Initializing Raft..."
         while not syncObj.isReady():
             continue
 
         # now distributed_dict is ready!
-        print "Raft initialized..."
+        print "Raft initialized!"
         return distributed_dict
 
     '''
@@ -183,7 +193,14 @@ class Resolver:
         for rr in self.records:
             if rr.name.name == name and rr.type == qtype:
                 answers.append(rr)
-        # TODO if not, return NX record (to maintain availability)
+
+        # Next, attempt to get it from distributed_dict
+        # of hashkeys->RR. Need to do quick lookup to see if any keys of
+        # qname-qtype* exist; these should be added to our answers list if these
+        # records aren't already there.
+        # Copy RR locally before returning, and also increment the copy count in the hashes->local_copy_count. USE LOCKS HERE.
+
+        # TODO if no records, return NX record
 
         return answers, authority, additional
 
