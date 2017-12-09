@@ -93,7 +93,7 @@ class Resolver:
                     rrheader.type,
                     base64.b64encode(hashval)))
 
-    def _getPrefixKey(self, name, qtype):
+    def _getprefix_key(self, name, qtype):
         rdata = (name, qtype)
         m = sha256()
         m.update(repr(rdata))
@@ -103,6 +103,7 @@ class Resolver:
 
     # Read in entries from zone file and store locally.
     def _loadZones(self):
+        print "Loading zonefile..."
         records = {}
         for line in self._zoneLines():
         #try:
@@ -131,43 +132,40 @@ class Resolver:
                     # UGHGHHG still have to figure out how to
                     # handle multiple line TXT inputs.
                 new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
-                fullkey = self._getUniqueKey(new_rr)
-                prefixkey = self._getPrefixKey(new_rr.name.name, new_rr.type)
+                full_key = self._getUniqueKey(new_rr)
+                prefix_key = self._getprefix_key(new_rr.name.name, new_rr.type)
 
-                print "new_rr is %s%s" % (str(new_rr), str(new_rr.payload))
-                print "full key is %s" % str(fullkey)
-                print "prefix key is %s" % str(prefixkey)
+                # print "new_rr is %s%s" % (str(new_rr), str(new_rr.payload))
+                # print "full key is %s" % str(full_key)
+                # print "prefix key is %s" % str(prefix_key)
 
                 # Add to local RR store
-                if records.get(prefixkey) is None:
-                    records[prefixkey] = [(new_rr, fullkey)]
-                else:
-                    records[prefixkey].append((new_rr, fullkey))
+                if records.get(prefix_key) is None:
+                    records[prefix_key] = []
+                records[prefix_key].append((new_rr, full_key))
 
                 # Add to raft RR store
-                print "Record %s is being added to the raft RR store" % str(new_rr)
-                if self.lock.tryAcquire('lock', sync=True):
-                    if self.rr_raft.get(prefixkey) is None:
-                        self.rr_raft[prefixkey] = [(new_rr, fullkey)]
-                    else:
-                        self.rr_raft[prefixkey].append((new_rr, fullkey))
-                    self.lock.release('lock')
-                # TODO:
-                    # 1) encode new_rr
-                    # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
-                    # 3) to distributed_dict of hashkey->RR, add hashkey->new_rr
-
-                # Case if line is continuation of other record (e.g. long TXT)
-                # elif len(line_components) == 1:
-
-                # Case neither of above--odd line
-            # Case if line is continuation of other record (e.g. long TXT)
-            # elif len(line_components) == 1:
-            # Case neither of above--odd line
+                # print "Record %s is being added to the raft RR store" % str(new_rr)
+                # if self.lock.tryAcquire('lock', sync=True):
+                # print "adding to raft new rr " + str(new_rr)
+                if self.rr_raft.get(prefix_key) is None:
+                    self.rr_raft.set(prefix_key, [], sync=True)
+                rr_list = self.rr_raft.get(prefix_key)
+                rr_list.append((new_rr, full_key))
+                self.rr_raft.set(prefix_key, rr_list, sync=True)
+                if full_key not in self.rr_dwnlds.keys():
+                    # You know one download of this value has already occured!
+                    self.rr_dwnlds.set(full_key, 1, sync=True)
+                else:
+                    prev_value = self.rr_dwnlds[full_key]
+                    self.rr_dwnlds.set(full_key, prev_value+1, sync=True)
+                # self.lock.release('lock')
             else:
                 raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
             #except Exception as e:
             #    raise RuntimeError("line '%s' is incorrectly formatted." % line)
+        # print "AFTER ADDING ALL KEYS TO RAFT LIST, IT LOOKS LIKE"
+        # print self.rr_raft.keys()
         return records
 
     '''
@@ -203,38 +201,56 @@ class Resolver:
         authority = []
         additional = []
 
-        prefix_key = self._getPrefixKey(qname, qtype)
+        prefix_key = self._getprefix_key(qname, qtype)
+        # print "Current prefix key is " + str(prefix_key)
         local_matches = self.rr_local.get(prefix_key)
         if local_matches:
-            print "local_matches is %s" % str(local_matches)
-            for (new_rr, hashkey) in local_matches:
-                answer_dict[hashkey] = new_rr
+            # print "local_matches is %s" % str(local_matches)
+            # print "Found local match"
+            for (new_rr, full_key) in local_matches:
+                answer_dict[full_key] = new_rr
 
         # Next, attempt to get it from distributed_dict
-        # of hashkeys->RR. Need to do quick lookup to see if any keys of
+        # of full_keys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
         raft_matches = self.rr_raft.get(prefix_key)
+        raft_matches_cpy = list(raft_matches)# TODO: use defer
+        # print "Raft keys and value lists are currently " + str([(key, len(self.rr_raft[key])) for key in self.rr_raft.keys()])
         if raft_matches:
-            print "raft_matches is %s" % str(raft_matches)
-            for (new_rr, hashkey) in raft_matches:
-                if hashkey in answer_dict.keys():
+            # print "old raft table for this prefix key is " + str(self.rr_raft[prefix_key])
+
+            # print "raft_matches is %s" % str(raft_matches)
+            for (new_rr, full_key) in raft_matches:
+                if full_key in answer_dict.keys():
+                    # print "Already exists!"
                     continue
 
-                # if record is not a duplicate, add it to answers_dict, then
-                # copy it locally.
-                answers_dict[hashkey] = new_rr
-                self.rr_local[hashkey] = new_rr
-                if self.lock.tryAcquire('lock', sync=True):
-                    if hashkey not in self.rr_dwnlds.keys():
-                        rr_dwnlds[hashkey] = 0
-                    rr_dwnlds[hashkey] += 1
+                # if record is not a duplicate, add it to answer_dict.
+                # print "New record from raft! Adding it."
+                answer_dict[full_key] = new_rr
 
-                    if rr_dwnlds[hashkey] == self.num_nodes:
-                        rr_dwnlds.pop(hashkey)
+                # Also insert local copy!
+                if self.rr_local.get(prefix_key) is None:
+                    self.rr_local[prefix_key] = []
+                self.rr_local[prefix_key].append((new_rr, full_key))
+
+                if self.lock.tryAcquire('lock', sync=True):
+                    # print "rr_dwnlds.keys() is " + str(self.rr_dwnlds.keys())
+                    prev_value = self.rr_dwnlds[full_key]
+                    if prev_value+1 >= self.num_nodes:
+                        # print "removal occurred!"
+                        self.rr_dwnlds.pop(full_key, sync=True)
                         # remove rr from rr_raft list
-                        # rr_raft.pop(hashkey)
+                        # rr_raft.pop(full_key)
+                        raft_matches_cpy.remove((new_rr, full_key))
+                    else:
+                        self.rr_dwnlds.set(full_key, prev_value+1, sync=True)
+
                     self.lock.release('lock')
+
+        self.rr_raft.set(prefix_key, raft_matches_cpy, sync=True)
+        # print "new raft table for this prefix key is " + str(self.rr_raft[prefix_key])
 
         if len(answer_dict) > 0: # corresponding RRs have been found
             return answer_dict.values(), authority, additional
@@ -242,8 +258,8 @@ class Resolver:
 
         # TODO if no records, return NX record. placeholder is empty set of
         # answers for now.
-        answers = []
-        return answers, authority, additional
+        answer = []
+        return answer, authority, additional
 
     '''
     PUBLIC FUNC
