@@ -1,6 +1,6 @@
 from pysyncobj import SyncObj
 from pysyncobj import SyncObjConf
-from pysyncobj.batteries import ReplCounter, ReplDict
+from pysyncobj.batteries import ReplDict, ReplLockManager
 import time
 import argparse
 import json
@@ -25,10 +25,10 @@ class Resolver:
             "TXT" : dns.TXT
         }
 
-        self.node, self.other_nodes, self.query_port = self._configure()
+        self.node, self.other_nodes, self.query_port, self.num_nodes = self._configure()
 
-        self.records = self._loadZones()
-        self.distributed_dict = self._initDistributedDict()
+        self.rr_local = self._loadZones()
+        self.rr_raft, self.rr_dwnlds, self.lock = self._initDistributedDict()
 
     '''
     PRIVATE FUNC
@@ -52,9 +52,12 @@ class Resolver:
         query_loc = configs["nodes"][self.node_name]["query_loc"]
         query_port = int(query_loc.split(":")[1])
 
+        # Get total number of nodes
+        num_nodes = len(configs["nodes"])
+
         config_fd.close()
 
-        return node, other_nodes, query_port
+        return node, other_nodes, query_port, num_nodes
 
     '''
     PUBLIC FUNC
@@ -80,7 +83,7 @@ class Resolver:
 
     # Read in entries from zone file and store locally.
     def _loadZones(self):
-        records = []
+        records = {} # THIS HSOULD BECOME DICT.
         for line in self._zoneLines():
             try:
                 line_components = line.split(None, 2)
@@ -111,6 +114,7 @@ class Resolver:
 
                     new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
                     records.append(new_rr)
+                    # ^ THIS SHOULD BECOME DICT of hashkey->rr
                     # TODO:
                     # 1) encode new_rr
                     # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
@@ -133,10 +137,12 @@ class Resolver:
     written locally.
     '''
     def _initDistributedDict(self):
-        distributed_dict = ReplDict()
+        rr_raft = ReplDict()
+        rr_dwnlds = ReplDict()
+        lock = ReplLockManager(3)
         config = SyncObjConf(appendEntriesUseBatch=True)
         syncObj = SyncObj(self.node, self.other_nodes,
-        consumers=[distributed_dict], conf=config)
+        consumers=[rr_raft, rr_dwnlds, lock], conf=config)
 
         print "Initializing Raft..."
         while not syncObj.isReady():
@@ -144,31 +150,59 @@ class Resolver:
 
         # now distributed_dict is ready!
         print "Raft initialized!"
-        return distributed_dict
+        return rr_raft, rr_dwnlds, lock
 
     '''
     PRIVATE FUNC
     func _recordLookup() looks up RRs that match a query.
     '''
     def _recordLookup(self, query):
-        name = query.name.name
+        qname = query.name.name
         qtype = query.type
-        # check if mapping in zonefile init_records
-        answers = []
+
+        answer_dict = {}
         authority = []
         additional = []
-        for rr in self.records:
-            if rr.name.name == name and rr.type == qtype:
-                answers.append(rr)
+
+        hashkey_prefix = '%s-%d-' % (qname, qtype)
+        # check if mapping in local records
+        for hashkey in self.rr_local.keys():
+            if hashkey.startswith(hashkey_prefix):
+                answers_dict[hashkey] = rr_local[hashkey]
 
         # Next, attempt to get it from distributed_dict
         # of hashkeys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
+        hashkey_prefix = '%s-%d-' % (qname, qtype)
+        for hashkey in self.rr_raft.keys():
+            if hashkey.startswith(hashkey_prefix):
+                # avoid duplicate record additions
+                if hashkey in answer_dict.keys():
+                    continue
+
+                # if record is not a duplicate, add it to answers_dict, then
+                # copy it locally.
+                new_rr = rr_raft[hashkey]
+                answers_dict[hashkey] = new_rr
+                self.rr_local[hashkey] = new_rr
+                if lockManager.tryAcquire('lockCount', sync=True):
+                    if hashkey not in self.rr_dwnlds.keys():
+                        rr_dwnlds[hashkey] = 0
+                    rr_dwnlds[hashkey] += 1
+
+                    if rr_dwnlds[hashkey] == self.num_nodes:
+                        rr_dwnlds.pop(hashkey)
+                        rr_raft.pop(hashkey)
+                    lockManager.release('lockCount')
+
+        if len(answer_dict) > 0: # corresponding RRs have been found
+            return answer_dict.values(), authority, additional
         # Copy RR locally before returning, and also increment the copy count in the hashes->local_copy_count. USE LOCKS HERE.
 
-        # TODO if no records, return NX record
-
+        # TODO if no records, return NX record. placeholder is empty set of
+        # answers for now.
+        answers = []
         return answers, authority, additional
 
     '''
