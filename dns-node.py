@@ -1,9 +1,12 @@
+import argparse
+import base64
+from cStringIO import StringIO
+from hashlib import sha256
+import json
 from pysyncobj import SyncObj
 from pysyncobj import SyncObjConf
 from pysyncobj.batteries import ReplDict, ReplLockManager
 import time
-import argparse
-import json
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
@@ -81,41 +84,70 @@ class Resolver:
             line = line.rstrip()
             yield line
 
+    def _getUniqueKey(self, rrheader):
+        encoder = StringIO()
+        rdata = rrheader.encode(encoder)
+        m = sha256()
+        m.update(encoder.getvalue())
+        hashval = m.digest()
+        return repr((str(rrheader.name),
+                    rrheader.type,
+                    base64.b64encode(hashval)))
+
+    def _getPrefixKey(self, name, qtype):
+        rdata = (name, qtype)
+        m = sha256()
+        m.update(repr(rdata))
+        hashval = m.digest()
+        return repr((str(name),
+                    qtype,
+                    base64.b64encode(hashval)))
+
     # Read in entries from zone file and store locally.
     def _loadZones(self):
-        records = {} # THIS HSOULD BECOME DICT.
+        records = {}
         for line in self._zoneLines():
-            try:
-                line_components = line.split(None, 2)
-                # Case if independent record
-                if len(line_components) == 3:
-                    rname, rtype, rvalue = line_components
-                    # # if rvalue is a list, make sure to store it as one!
-                    payload = None
-                    if rvalue.startswith("["):
-                        rvalue = json.loads(rvalue)
+        #try:
+            line_components = line.split(None, 2)
+            # Case if independent record
+            if len(line_components) == 3:
+                rname, rtype, rvalue = line_components
+                # # if rvalue is a list, make sure to store it as one!
+                payload = None
+                if rvalue.startswith("["):
+                    rvalue = json.loads(rvalue)
+                # create correct payload
+                payload = None
+                if rtype == "A":
+                    payload = dns.Record_A(address=rvalue)
+                elif rtype == "CNAME":
+                    payload = dns.Record_CNAME(name=rvalue)
+                elif rtype == "MX":
+                    payload = dns.Record_MX(name=rvalue[0], preference=int(rvalue[1]))
+                elif rtype == "NS":
+                    payload = dns.Record_NS(name=rvalue)
+                elif rtype == "SOA":
+                    payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
+                elif rtype == "TXT":
+                    payload = dns.Record_TXT(data=[rvalue])
+                    # UGHGHHG still have to figure out how to
+                    # handle multiple line TXT inputs.
+                new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
+                fullkey = self._getUniqueKey(new_rr)
+                prefixkey = self._getPrefixKey(new_rr.name.name, new_rr.type)
 
-                    # create correct payload
-                    payload = None
-                    if rtype == "A":
-                        payload = dns.Record_A(address=rvalue)
-                    elif rtype == "CNAME":
-                        payload = dns.Record_CNAME(name=rvalue)
-                    elif rtype == "MX":
-                        payload = dns.Record_MX(name=rvalue[0], preference=int(rvalue[1]))
-                    elif rtype == "NS":
-                        payload = dns.Record_NS(name=rvalue)
-                    elif rtype == "SOA":
-                        payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
-                    elif rtype == "TXT":
-                        payload = dns.Record_TXT(data=[rvalue])
-                        # UGHGHHG still have to figure out how to
-                        # handle multiple line TXT inputs.
+                strio = StringIO()
+                new_rr.encode(strio)
+                print str(new_rr)
+                print strio.getvalue()
+                print fullkey
+                print prefixkey
 
-                    new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
-                    records.append(new_rr)
-                    # ^ THIS SHOULD BECOME DICT of hashkey->rr
-                    # TODO:
+                if records.get(prefixkey) is None:
+                    records[prefixkey] = [(new_rr, fullkey)]
+                else:
+                    records[prefixkey].append((new_rr, fullkey))
+                # TODO:
                     # 1) encode new_rr
                     # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
                     # 3) to distributed_dict of hashkey->RR, add hashkey->new_rr
@@ -124,11 +156,13 @@ class Resolver:
                 # elif len(line_components) == 1:
 
                 # Case neither of above--odd line
-                else:
-                    raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
-            except Exception as e:
-                raise RuntimeError("line '%s' is incorrectly formatted." % line)
-
+            # Case if line is continuation of other record (e.g. long TXT)
+            # elif len(line_components) == 1:
+            # Case neither of above--odd line
+            else:
+                raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
+            #except Exception as e:
+            #    raise RuntimeError("line '%s' is incorrectly formatted." % line)
         return records
 
     '''
@@ -163,13 +197,13 @@ class Resolver:
         answer_dict = {}
         authority = []
         additional = []
-
-        hashkey_prefix = '%s-%d-' % (qname, qtype)
-        # check if mapping in local records
-        for hashkey in self.rr_local.keys():
-            if hashkey.startswith(hashkey_prefix):
-                answers_dict[hashkey] = rr_local[hashkey]
-
+        matches = rr_local.get(self._getPrefixkey(name, qtype))
+        if matches:
+            for match in matches:
+            answer_dict[match(1)] = match(0)
+        # for rr in self.records:
+        #     if rr.name.name == name and rr.type == qtype:
+        #         answers.append(rr)
         # Next, attempt to get it from distributed_dict
         # of hashkeys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
