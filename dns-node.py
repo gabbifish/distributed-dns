@@ -30,8 +30,8 @@ class Resolver:
 
         self.node, self.other_nodes, self.query_port, self.num_nodes = self._configure()
 
-        self.rr_local = self._loadZones()
         self.rr_raft, self.rr_dwnlds, self.lock = self._initDistributedDict()
+        self.rr_local = self._loadZones()
 
     '''
     PRIVATE FUNC
@@ -134,14 +134,24 @@ class Resolver:
                 fullkey = self._getUniqueKey(new_rr)
                 prefixkey = self._getPrefixKey(new_rr.name.name, new_rr.type)
 
-                print "new_rr is %s" % str(new_rr)
+                print "new_rr is %s%s" % (str(new_rr), str(new_rr.payload))
                 print "full key is %s" % str(fullkey)
                 print "prefix key is %s" % str(prefixkey)
 
+                # Add to local RR store
                 if records.get(prefixkey) is None:
                     records[prefixkey] = [(new_rr, fullkey)]
                 else:
                     records[prefixkey].append((new_rr, fullkey))
+
+                # Add to raft RR store
+                print "Record %s is being added to the raft RR store" % str(new_rr)
+                if self.lock.tryAcquire('lock', sync=True):
+                    if self.rr_raft.get(prefixkey) is None:
+                        self.rr_raft[prefixkey] = [(new_rr, fullkey)]
+                    else:
+                        self.rr_raft[prefixkey].append((new_rr, fullkey))
+                    self.lock.release('lock')
                 # TODO:
                     # 1) encode new_rr
                     # 2) get hash of encoded new_rr (OR do rname-rtype-hash(payload) as key)
@@ -196,17 +206,17 @@ class Resolver:
         prefix_key = self._getPrefixKey(qname, qtype)
         local_matches = self.rr_local.get(prefix_key)
         if local_matches:
+            print "local_matches is %s" % str(local_matches)
             for (new_rr, hashkey) in local_matches:
                 answer_dict[hashkey] = new_rr
-        # for rr in self.records:
-        #     if rr.name.name == name and rr.type == qtype:
-        #         answers.append(rr)
+
         # Next, attempt to get it from distributed_dict
         # of hashkeys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
         raft_matches = self.rr_raft.get(prefix_key)
         if raft_matches:
+            print "raft_matches is %s" % str(raft_matches)
             for (new_rr, hashkey) in raft_matches:
                 if hashkey in answer_dict.keys():
                     continue
@@ -215,15 +225,16 @@ class Resolver:
                 # copy it locally.
                 answers_dict[hashkey] = new_rr
                 self.rr_local[hashkey] = new_rr
-                if lockManager.tryAcquire('lockCount', sync=True):
+                if self.lock.tryAcquire('lock', sync=True):
                     if hashkey not in self.rr_dwnlds.keys():
                         rr_dwnlds[hashkey] = 0
                     rr_dwnlds[hashkey] += 1
 
                     if rr_dwnlds[hashkey] == self.num_nodes:
                         rr_dwnlds.pop(hashkey)
-                        rr_raft.pop(hashkey)
-                    lockManager.release('lockCount')
+                        # remove rr from rr_raft list
+                        # rr_raft.pop(hashkey)
+                    self.lock.release('lock')
 
         if len(answer_dict) > 0: # corresponding RRs have been found
             return answer_dict.values(), authority, additional
