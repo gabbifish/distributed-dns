@@ -6,6 +6,7 @@ import json
 from pysyncobj import SyncObj
 from pysyncobj import SyncObjConf
 from pysyncobj.batteries import ReplDict, ReplLockManager
+import thread
 import time
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
@@ -16,10 +17,10 @@ class Resolver:
     Initialize resolver
     '''
     def __init__(self, node_name, zone_file, config_file):
-        self.node_name = node_name
-        self.zone_file = zone_file
-        self.config_file = config_file
-        self.query_types = {
+        self.__node_name = node_name
+        self.__zone_file = zone_file
+        self.__config_file = config_file
+        self.__query_types = {
             "A" : dns.A,
             "CNAME" : dns.CNAME,
             "MX" : dns.MX,
@@ -28,31 +29,31 @@ class Resolver:
             "TXT" : dns.TXT
         }
 
-        self.node, self.other_nodes, self.query_port, self.num_nodes = self._configure()
+        self.__node, self.__other_nodes, self.__query_port, self.__num_nodes = self.__configure()
 
-        self.rr_raft, self.rr_dwnlds, self.lock = self._initDistributedDict()
-        self.rr_local = self._loadZones()
+        self.__rr_raft, self.__rr_dwnlds, self.__lock = self.__initDistributedDict()
+        self.__rr_local = self.__loadZones()
 
     '''
     PRIVATE FUNC
     func _configure() is called upon resolver initialization; returns self_node
     ip:port and list of other ip:ports for other nodes in cluster.
     '''
-    def _configure(self):
-        config_fd = open(self.config_file)
+    def __configure(self):
+        config_fd = open(self.__config_file)
         configs = json.load(config_fd)
 
         # Get node specified on commandline.
-        node = configs["nodes"][self.node_name]["raft_loc"]
+        node = configs["nodes"][self.__node_name]["raft_loc"]
 
         # Get list of other nodes in cluster.
         other_nodes = []
         for k in configs["nodes"].keys():
-            if k != self.node_name:
+            if k != self.__node_name:
                 other_nodes.append(configs["nodes"][k]["raft_loc"])
 
         # Get query port
-        query_loc = configs["nodes"][self.node_name]["query_loc"]
+        query_loc = configs["nodes"][self.__node_name]["query_loc"]
         query_port = int(query_loc.split(":")[1])
 
         # Get total number of nodes
@@ -69,22 +70,22 @@ class Resolver:
     query_port is 10053 in config file)
     '''
     def getQueryPort(self):
-        return self.query_port
+        return self.__query_port
 
     '''
     PRIVATE FUNC
     func _zoneLines() processes lines in the zonefile, ignoring commented ones
     and yielding entries stripped of external whitespace.
     '''
-    def _zoneLines(self):
-        zone_fd = open(self.zone_file)
+    def __zoneLines(self):
+        zone_fd = open(self.__zone_file)
         for line in zone_fd:
             if line.startswith("#"):
                 continue
             line = line.rstrip()
             yield line
 
-    def _getUniqueKey(self, rrheader):
+    def __getUniqueKey(self, rrheader):
         encoder = StringIO()
         m = sha256()
         m.update(str(rrheader.payload))
@@ -93,7 +94,7 @@ class Resolver:
                     rrheader.type,
                     base64.b64encode(hashval)))
 
-    def _getPrefixKey(self, name, qtype):
+    def __getPrefixKey(self, name, qtype):
         rdata = (name, qtype)
         m = sha256()
         m.update(repr(rdata))
@@ -102,10 +103,10 @@ class Resolver:
                     qtype))
 
     # Read in entries from zone file and store locally.
-    def _loadZones(self):
+    def __loadZones(self):
         print "Loading zonefile..."
         records = {}
-        for line in self._zoneLines():
+        for line in self.__zoneLines():
             line_components = line.split(None, 2)
             # Case if independent record
             if len(line_components) == 3:
@@ -128,28 +129,28 @@ class Resolver:
                     payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
                 elif rtype == "TXT":
                     payload = dns.Record_TXT(data=[rvalue])
-                new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
-                full_key = self._getUniqueKey(new_rr)
-                prefix_key = self._getPrefixKey(new_rr.name.name, new_rr.type)
+                new_rr = dns.RRHeader(name=rname, type=self.__query_types[rtype], payload=payload)
+                full_key = self.__getUniqueKey(new_rr)
+                prefix_key = self.__getPrefixKey(new_rr.name.name, new_rr.type)
 
                 # Add to local RR store
                 if records.get(prefix_key) is None:
                     records[prefix_key] = []
                 records[prefix_key].append((new_rr, full_key))
 
-                if self.lock.tryAcquire('lock', sync=True):
-                    if self.rr_raft.get(prefix_key) is None:
-                        self.rr_raft.set(prefix_key, [], sync=True)
-                    rr_list = self.rr_raft.get(prefix_key)
+                if self.__lock.tryAcquire('lock', sync=True):
+                    if self.__rr_raft.get(prefix_key) is None:
+                        self.__rr_raft.set(prefix_key, [], sync=True)
+                    rr_list = self.__rr_raft.get(prefix_key)
                     rr_list.append((new_rr, full_key))
-                    self.rr_raft.set(prefix_key, rr_list, sync=True)
-                    if full_key not in self.rr_dwnlds.keys():
+                    self.__rr_raft.set(prefix_key, rr_list, sync=True)
+                    if full_key not in self.__rr_dwnlds.keys():
                         # You know one download of this value has already occured!
-                        self.rr_dwnlds.set(full_key, 1, sync=True)
+                        self.__rr_dwnlds.set(full_key, 1, sync=True)
                     else:
-                        prev_value = self.rr_dwnlds[full_key]
-                        self.rr_dwnlds.set(full_key, prev_value+1, sync=True)
-                    self.lock.release('lock')
+                        prev_value = self.__rr_dwnlds[full_key]
+                        self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
+                    self.__lock.release('lock')
             else:
                 raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
         return records
@@ -159,19 +160,18 @@ class Resolver:
     func _initDistributedDict() sets up distributed dict for requests not yet
     written locally.
     '''
-    def _initDistributedDict(self):
+    def __initDistributedDict(self):
         rr_raft = ReplDict()
         rr_dwnlds = ReplDict()
         lock = ReplLockManager(3)
         config = SyncObjConf(appendEntriesUseBatch=True)
-        syncObj = SyncObj(self.node, self.other_nodes,
+        syncObj = SyncObj(self.__node, self.__other_nodes,
         consumers=[rr_raft, rr_dwnlds, lock], conf=config)
 
         print "Initializing Raft..."
         while not syncObj.isReady():
             continue
 
-        # now distributed_dict is ready!
         print "Raft initialized!"
         return rr_raft, rr_dwnlds, lock
 
@@ -179,7 +179,7 @@ class Resolver:
     PRIVATE FUNC
     func _recordLookup() looks up RRs that match a query.
     '''
-    def _recordLookup(self, query):
+    def __recordLookup(self, query):
         qname = query.name.name
         qtype = query.type
 
@@ -187,8 +187,8 @@ class Resolver:
         authority = []
         additional = []
 
-        prefix_key = self._getPrefixKey(qname, qtype)
-        local_matches = self.rr_local.get(prefix_key)
+        prefix_key = self.__getPrefixKey(qname, qtype)
+        local_matches = self.__rr_local.get(prefix_key)
         if local_matches:
             for (new_rr, full_key) in local_matches:
                 answer_dict[full_key] = new_rr
@@ -197,7 +197,7 @@ class Resolver:
         # of full_keys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
-        raft_matches = self.rr_raft.get(prefix_key)
+        raft_matches = self.__rr_raft.get(prefix_key)
         if raft_matches:
             raft_matches_cpy = list(raft_matches)# TODO: use defer
 
@@ -209,22 +209,22 @@ class Resolver:
                 answer_dict[full_key] = new_rr
 
                 # Also insert local copy!
-                if self.rr_local.get(prefix_key) is None:
-                    self.rr_local[prefix_key] = []
-                self.rr_local[prefix_key].append((new_rr, full_key))
+                if self.__rr_local.get(prefix_key) is None:
+                    self.__rr_local[prefix_key] = []
+                self.__rr_local[prefix_key].append((new_rr, full_key))
 
-                if self.lock.tryAcquire('lock', sync=True):
-                    prev_value = self.rr_dwnlds[full_key]
-                    if prev_value+1 >= self.num_nodes:
-                        self.rr_dwnlds.pop(full_key, sync=True)
+                if self.__lock.tryAcquire('lock', sync=True):
+                    prev_value = self.__rr_dwnlds[full_key]
+                    if prev_value+1 >= self.__num_nodes:
+                        self.__rr_dwnlds.pop(full_key, sync=True)
                         raft_matches_cpy.remove((new_rr, full_key))
                     else:
-                        self.rr_dwnlds.set(full_key, prev_value+1, sync=True)
+                        self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
 
-                    self.lock.release('lock')
+                    self.__lock.release('lock')
 
             # remove rrs downloaded among all nodes from rr_raft list
-            self.rr_raft.set(prefix_key, raft_matches_cpy, sync=True)
+            self.__rr_raft.set(prefix_key, raft_matches_cpy, sync=True)
 
         if len(answer_dict) > 0: # corresponding RRs have been found
             return answer_dict.values(), authority, additional
@@ -240,7 +240,7 @@ class Resolver:
     func query() returns RRs that match a query.
     '''
     def query(self, query, timeout=None):
-        return defer.succeed(self._recordLookup(query))
+        return defer.succeed(self.__recordLookup(query))
 
     '''
     TODO: called from separate thread; if new mapping is entered via
