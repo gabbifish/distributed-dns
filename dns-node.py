@@ -132,7 +132,7 @@ class Resolver:
                 new_rr = dns.RRHeader(name=rname, type=self.query_types[rtype], payload=payload)
                 fullkey = self._getUniqueKey(new_rr)
                 prefixkey = self._getKey(new_rr.name.name, new_rr.type)
-                
+
                 strio = StringIO()
                 new_rr.encode(strio)
                 print str(new_rr)
@@ -193,7 +193,8 @@ class Resolver:
         authority = []
         additional = []
         if records.get(self._key(name, qtype)):
-            answers.append(rr[0])
+            for r in rr:
+                answers.append(r[0])
         # for rr in self.records:
         #     if rr.name.name == name and rr.type == qtype:
         #         answers.append(rr)
