@@ -86,9 +86,8 @@ class Resolver:
 
     def _getUniqueKey(self, rrheader):
         encoder = StringIO()
-        rdata = rrheader.encode(encoder)
         m = sha256()
-        m.update(encoder.getvalue())
+        m.update(str(rrheader.payload))
         hashval = m.digest()
         return repr((str(rrheader.name),
                     rrheader.type,
@@ -100,8 +99,7 @@ class Resolver:
         m.update(repr(rdata))
         hashval = m.digest()
         return repr((str(name),
-                    qtype,
-                    base64.b64encode(hashval)))
+                    qtype))
 
     # Read in entries from zone file and store locally.
     def _loadZones(self):
@@ -136,12 +134,9 @@ class Resolver:
                 fullkey = self._getUniqueKey(new_rr)
                 prefixkey = self._getPrefixKey(new_rr.name.name, new_rr.type)
 
-                strio = StringIO()
-                new_rr.encode(strio)
-                print str(new_rr)
-                print strio.getvalue()
-                print fullkey
-                print prefixkey
+                print "new_rr is %s" % str(new_rr)
+                print "full key is %s" % str(fullkey)
+                print "prefix key is %s" % str(prefixkey)
 
                 if records.get(prefixkey) is None:
                     records[prefixkey] = [(new_rr, fullkey)]
@@ -197,10 +192,12 @@ class Resolver:
         answer_dict = {}
         authority = []
         additional = []
-        matches = rr_local.get(self._getPrefixkey(name, qtype))
-        if matches:
-            for match in matches:
-            answer_dict[match(1)] = match(0)
+
+        prefix_key = self._getPrefixKey(qname, qtype)
+        local_matches = self.rr_local.get(prefix_key)
+        if local_matches:
+            for (new_rr, hashkey) in local_matches:
+                answer_dict[hashkey] = new_rr
         # for rr in self.records:
         #     if rr.name.name == name and rr.type == qtype:
         #         answers.append(rr)
@@ -208,16 +205,14 @@ class Resolver:
         # of hashkeys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
-        hashkey_prefix = '%s-%d-' % (qname, qtype)
-        for hashkey in self.rr_raft.keys():
-            if hashkey.startswith(hashkey_prefix):
-                # avoid duplicate record additions
+        raft_matches = self.rr_raft.get(prefix_key)
+        if raft_matches:
+            for (new_rr, hashkey) in raft_matches:
                 if hashkey in answer_dict.keys():
                     continue
 
                 # if record is not a duplicate, add it to answers_dict, then
                 # copy it locally.
-                new_rr = rr_raft[hashkey]
                 answers_dict[hashkey] = new_rr
                 self.rr_local[hashkey] = new_rr
                 if lockManager.tryAcquire('lockCount', sync=True):
