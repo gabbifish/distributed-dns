@@ -20,18 +20,15 @@ the DNS cluster fail).
 The nodes in this distributed DNS cluster rely on the Twisted and pySyncObj
 python libaries. Pip install both before attempting to run.
 
-### Run
+## Run
 The DNS server relies on the dns-config file, which is parsed as json. This
 file specifies which nodes use which ip:port pairs for querying and
 participating in raft.
 
 To run a node, run
 ```
-./dns-node -n X -c dns-config.json -z zfX.txt
+./dns-node -n X -c dns-config.json -z zone-files/zfX.txt
 ```
 where X is the number of the node (and its corresponding zonefile) you want to
 start. Because raft will not work on a single node, a running node will hang at
 `Initializing raft...` until another node is started up.
-
-## Extensibility
-TODO

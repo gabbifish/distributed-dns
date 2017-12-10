@@ -35,7 +35,6 @@ class Resolver:
             "TXT" : dns.TXT
         }
 
-        # self.__rr_local = {}
         self.__node, self.__other_nodes, self.__query_port, self.__num_nodes = self.__configure()
 
         self.__lock = threading.RLock()
@@ -43,9 +42,9 @@ class Resolver:
         self.__rr_local = self.__initDistributedDict()
         self.__loadZones()
 
-        self.__thread = threading.Thread(target=lambda: self.readFromStdin())
-        self.__thread.setDaemon(True)
-        self.__thread.start()
+        self.__stdin_thread = threading.Thread(target=lambda: self.readFromStdin())
+        self.__stdin_thread.setDaemon(True)
+        self.__stdin_thread.start()
 
 
     '''
@@ -78,7 +77,6 @@ class Resolver:
         return node, other_nodes, query_port, num_nodes
 
     '''
-    PUBLIC FUNC
     func getQueryPort() returns this node's query port--the one used by
     command-line tools like dig (e.g. 'dig -p 10053 @127.0.0.1 example.com' if
     query_port is 10053 in config file)
@@ -118,12 +116,10 @@ class Resolver:
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
                 continue
-            print "Read line"
+            print "Read line into resource record %s." % str(rr)
             prefixKey = self._getPrefixKey(rr.name.name, rr.type)
-            # fullKey = self.__getUniqueKey(rr)
             self.__addLocalStorage(rr, prefixKey)
-            # self.__addRaftStorage(rr, prefixKey, fullKey)
-            print "Added line"
+            print "Added resource record for this entry."
 
     '''
     func __getUniqueKey() generates a unique key for a resource record by
@@ -233,7 +229,11 @@ class Resolver:
 
         return dns.RRHeader(name=rname,
                             type=self.__query_types[rtype],
-                            payload=payload)
+                            payload=payload,
+                            ttl=0) # set TTL to 0 for now so that we can
+                            # demonstrate queries without a querier's DNS RR
+                            # cache interfering with our tests of independent
+                            # queries in our tests.
 
     '''
     func __recordLookup() looks up RRs that match a query.
@@ -241,7 +241,6 @@ class Resolver:
     def __recordLookup(self, query):
         qname = query.name.name
         qtype = query.type
-        #print time.time()
 
         answer_dict = {}
         authority = []
@@ -250,7 +249,7 @@ class Resolver:
         prefix_key = self._getPrefixKey(qname, qtype)
         local_matches = None
 
-        print "Query for %s" %qname
+        # print "Query for %s" %qname
         with self.__lock:
             if self.__async:
                 local_matches = self.__rr_local.rawData().get(prefix_key, None)
@@ -262,7 +261,7 @@ class Resolver:
             print "DomainError: %s" %qname
             raise dns.DomainError
 
-        print "Succeeded"
+        # print "Succeeded"
         return local_matches, authority, additional
 
         answer = []
