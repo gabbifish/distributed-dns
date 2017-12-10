@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import argparse
 import base64
 from StringIO import StringIO
@@ -28,11 +29,11 @@ class Resolver:
             "SOA" : dns.SOA,
             "TXT" : dns.TXT
         }
-
+        self.__rr_local = {}
         self.__node, self.__other_nodes, self.__query_port, self.__num_nodes = self.__configure()
 
         self.__rr_raft, self.__rr_dwnlds, self.__lock = self.__initDistributedDict()
-        self.__rr_local = self.__loadZones()
+        self.__loadZones()
 
     '''
     PRIVATE FUNC
@@ -97,57 +98,80 @@ class Resolver:
     def _getPrefixKey(self, name, qtype):
         return repr((name,qtype))
 
+    def __parseLine(self, line):
+        tokens = line.split(None, 2)
+        # reject if incorrectly formatted.
+        if len(tokens) != 3:
+            raise RuntimeError(
+                "line '%s': wrong # of tokens %d." %(line, len(tokens)))
+
+        rname, rtype, rvalue = tokens
+        # # if rvalue is a list, make sure to store it as one!
+        if rvalue.startswith("["):
+            rvalue = json.loads(rvalue)
+
+        # create correct payload
+        payload = None
+        if rtype == "A":
+            payload = dns.Record_A(address=rvalue)
+        elif rtype == "CNAME":
+            payload = dns.Record_CNAME(name=rvalue)
+        elif rtype == "MX":
+            payload = dns.Record_MX(name=rvalue[0], 
+                                    preference=int(rvalue[1]))
+        elif rtype == "NS":
+            payload = dns.Record_NS(name=rvalue)
+        elif rtype == "SOA":
+            payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
+        elif rtype == "TXT":
+            payload = dns.Record_TXT(data=[rvalue])
+        
+        return dns.RRHeader(name=rname, 
+                            type=self.__query_types[rtype], 
+                            payload=payload)
+        
+    def __addLocalStorage(self, rr, prefixKey, fullKey):
+        # Add to local RR store
+        if self.__rr_local.get(prefixKey) is None:
+            self.__rr_local[prefixKey] = []
+        else:
+            self.__rr_local[prefixKey].append((rr, fullKey))
+
+    def __addRaftStorage(self, rr, prefixKey, fullKey):
+        if self.__lock.tryAcquire('lock', sync=True):
+
+            if self.__rr_raft.get(prefix_key) is None:
+                self.__rr_raft.set(prefix_key, [], sync=True)
+            rr_list = self.__rr_raft.get(prefix_key)
+            rr_list.append((rr, full_key))
+            self.__rr_raft.set(prefix_key, rr_list, sync=True)
+
+            if full_key not in self.__rr_dwnlds.keys():
+                # You know one download of this value has already occured!
+                self.__rr_dwnlds.set(full_key, 1, sync=True)
+            else:
+                prev_value = self.__rr_dwnlds[full_key]
+                self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
+            self.__lock.release('lock')
+
     # Read in entries from zone file and store locally.
     def __loadZones(self):
         print "Loading zonefile..."
         records = {}
         for line in self.__zoneLines():
-            line_components = line.split(None, 2)
-            # Case if independent record
-            if len(line_components) == 3:
-                rname, rtype, rvalue = line_components
-                # # if rvalue is a list, make sure to store it as one!
-                payload = None
-                if rvalue.startswith("["):
-                    rvalue = json.loads(rvalue)
-                # create correct payload
-                payload = None
-                if rtype == "A":
-                    payload = dns.Record_A(address=rvalue)
-                elif rtype == "CNAME":
-                    payload = dns.Record_CNAME(name=rvalue)
-                elif rtype == "MX":
-                    payload = dns.Record_MX(name=rvalue[0], preference=int(rvalue[1]))
-                elif rtype == "NS":
-                    payload = dns.Record_NS(name=rvalue)
-                elif rtype == "SOA":
-                    payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
-                elif rtype == "TXT":
-                    payload = dns.Record_TXT(data=[rvalue])
-                new_rr = dns.RRHeader(name=rname, type=self.__query_types[rtype], payload=payload)
-                full_key = self.__getUniqueKey(new_rr)
-                prefix_key = self.__getPrefixKey(new_rr.name.name, new_rr.type)
+            
+            rr = None
+            try:
+                rr = self.__parseLine(line)
+            except Exception:
+                print("Some error prevented parsing line: %s" %line)
+            print str(rr)#, str(rr.payload)
+            full_key = self.__getUniqueKey(rr)
+            prefix_key = self._getPrefixKey(rr.name.name, rr.type)
+            
+            self.__addLocalStorage(rr, prefix_key, full_key)
 
-                # Add to local RR store
-                if records.get(prefix_key) is None:
-                    records[prefix_key] = []
-                records[prefix_key].append((new_rr, full_key))
-
-                if self.__lock.tryAcquire('lock', sync=True):
-                    if self.__rr_raft.get(prefix_key) is None:
-                        self.__rr_raft.set(prefix_key, [], sync=True)
-                    rr_list = self.__rr_raft.get(prefix_key)
-                    rr_list.append((new_rr, full_key))
-                    self.__rr_raft.set(prefix_key, rr_list, sync=True)
-                    if full_key not in self.__rr_dwnlds.keys():
-                        # You know one download of this value has already occured!
-                        self.__rr_dwnlds.set(full_key, 1, sync=True)
-                    else:
-                        prev_value = self.__rr_dwnlds[full_key]
-                        self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
-                    self.__lock.release('lock')
-            else:
-                raise RuntimeError("line '%s' has an incorrect number of args %d." % line, len(line_components))
+            
         return records
 
     '''
@@ -182,7 +206,7 @@ class Resolver:
         authority = []
         additional = []
 
-        prefix_key = self.__getPrefixKey(qname, qtype)
+        prefix_key = self._getPrefixKey(qname, qtype)
         local_matches = self.__rr_local.get(prefix_key)
         if local_matches:
             for (new_rr, full_key) in local_matches:
