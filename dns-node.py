@@ -21,10 +21,11 @@ class Resolver:
     '''
     Initialize resolver
     '''
-    def __init__(self, node_name, zone_file, config_file):
+    def __init__(self, node_name, zone_file, config_file, async=False):
         self.__node_name = node_name
         self.__zone_file = zone_file
         self.__config_file = config_file
+        self.__async = async
         self.__query_types = {
             "A" : dns.A,
             "CNAME" : dns.CNAME,
@@ -171,24 +172,6 @@ class Resolver:
                 rr_list.append(rr)
                 self.__rr_local.set(prefixKey, rr_list)
 
-    # def __addRaftStorage(self, rr, prefix_key, full_key):
-    #     #if self.__lock.tryAcquire('lock', sync=True):
-    #     with self.__lock:
-    #         if self.__rr_raft.get(prefix_key) is None:
-    #             self.__rr_raft.set(prefix_key, [(rr, full_key)], sync=True)
-    #         else:
-    #             rr_list = self.__rr_raft.get(prefix_key)
-    #             rr_list.append((rr, full_key))
-    #             self.__rr_raft.set(prefix_key,  rr_list, sync=True)
-    
-    #         if full_key not in self.__rr_dwnlds.keys():
-    #             # You know one download of this value has already occured!
-    #             self.__rr_dwnlds.set(full_key, 1, sync=True)
-    #         else:
-    #             prev_value = self.__rr_dwnlds[full_key]
-    #             self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
-    #             #self.__lock.release('lock')
-
     # Read in entries from zone file and store locally.
     def __loadZones(self):
         print "Loading zonefile..."
@@ -201,11 +184,9 @@ class Resolver:
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
             print str(rr)#, str(rr.payload)
-            # full_key = self.__getUniqueKey(rr)
             prefix_key = self._getPrefixKey(rr.name.name, rr.type)
             
             self.__addLocalStorage(rr, prefix_key)
-            # self.__addRaftStorage(rr, prefix_key, full_key)
             
         return records
 
@@ -216,10 +197,8 @@ class Resolver:
     '''
     def __initDistributedDict(self):
         rr_raft = ReplDict()
-        # rr_dwnlds = ReplDict()
         config = SyncObjConf(appendEntriesUseBatch=True)
         syncObj = SyncObj(self.__node, self.__other_nodes,
-        #consumers=[rr_raft, rr_dwnlds], conf=config)
         consumers=[rr_raft], conf=config)
 
         print "Initializing Raft..."
@@ -248,7 +227,11 @@ class Resolver:
 
         print "Query for %s" %qname
         with self.__lock:
-            local_matches = self.__rr_local.rawData().get(prefix_key, None)
+            if self.__async:
+                local_matches = self.__rr_local.rawData().get(prefix_key, None)
+            else:
+                local_matches = self.__rr_local.get(prefix_key, None)
+
 
         if local_matches is None: # corresponding RRs have been found
             print "DomainError: %s" %qname
@@ -256,13 +239,8 @@ class Resolver:
 
         print "Succeeded"
         return local_matches, authority, additional
-        # Copy RR locally before returning, and also increment the copy count in the hashes->local_copy_count. USE LOCKS HERE.
-
-        # TODO if no records, return NX record. placeholder is empty set of
-        # answers for now.
+        
         answer = []
-
-        return answer, authority, additional
 
     '''
     PUBLIC FUNC
@@ -270,12 +248,6 @@ class Resolver:
     '''
     def query(self, query, timeout=None):
         return defer.succeed(self.__recordLookup(query))
-
-    '''
-    TODO: called from separate thread; if new mapping is entered via
-    commandline, ensure that it is added to the distributed_dict!
-    '''
-    # def add_entry(self):
 
 
 if __name__ =='__main__':
@@ -287,6 +259,8 @@ if __name__ =='__main__':
                         help='this node\'s zonefile')
     parser.add_argument('-c', '--config', required=True,
                         help='this DNS server cluster\'s config file')
+    parser.add_argument('-a', '--async', action='store_true', default=False,
+                        help='this DNS server cluster\'s config file')
     args = parser.parse_args()
     node_name = args.node
     zone_file = args.zone
@@ -294,7 +268,7 @@ if __name__ =='__main__':
 
 
     # Start resolver
-    resolver = Resolver(node_name, zone_file, config_file)
+    resolver = Resolver(node_name, zone_file, config_file, args.async)
     # get port for resolver
     port = resolver.getQueryPort()
 
