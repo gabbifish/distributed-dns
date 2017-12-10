@@ -296,13 +296,9 @@ class Resolver:
             self.__rr_raft.set(prefix_key, raft_matches_cpy, sync=True)
 
         if len(answer_dict) > 0: # corresponding RRs have been found
+            return answer_dict.values(), authority, additional
+        else:
             raise dns.DomainError
-        # Copy RR locally before returning, and also increment the copy count in the hashes->local_copy_count. USE LOCKS HERE.
-
-        # TODO if no records, return NX record. placeholder is empty set of
-        # answers for now.
-        answer = []
-        return answer, authority, additional
 
     '''
     PUBLIC FUNC
