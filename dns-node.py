@@ -90,7 +90,7 @@ class Resolver:
         m = sha256()
         m.update(str(rrheader.payload))
         hashval = m.digest()
-        return repr((str(rrheader.name),
+        return repr((rrheader.name.name,
                     rrheader.type,
                     base64.b64encode(hashval)))
 
