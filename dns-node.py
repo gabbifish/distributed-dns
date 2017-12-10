@@ -7,7 +7,9 @@ import json
 from pysyncobj import SyncObj
 from pysyncobj import SyncObjConf
 from pysyncobj.batteries import ReplDict, ReplLockManager
+import sys
 import thread
+import threading
 import time
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
@@ -29,11 +31,19 @@ class Resolver:
             "SOA" : dns.SOA,
             "TXT" : dns.TXT
         }
+
         self.__rr_local = {}
         self.__node, self.__other_nodes, self.__query_port, self.__num_nodes = self.__configure()
 
+
+
         self.__rr_raft, self.__rr_dwnlds, self.__lock = self.__initDistributedDict()
         self.__loadZones()
+        self.__thread = threading.Thread(target=lambda: self.readFromStdin())
+        self.__thread.setDaemon(True)
+        self.__lock = threading.Lock()
+        self.__thread.start()
+
 
     '''
     PRIVATE FUNC
@@ -63,6 +73,22 @@ class Resolver:
         config_fd.close()
 
         return node, other_nodes, query_port, num_nodes
+
+    def readFromStdin(self):
+        while True:
+            line = ""
+            try:
+                line = sys.stdin.readline()
+            except Exception:
+                print("Some error prevented parsing line: %s" %line)
+                continue
+
+            rr = self.__parseLine(line)
+            prefixKey = self._getPrefixKey(rr.name.name, rr.type)
+            fullKey = self.__getUniqueKey(rr)
+            self.__addLocalStorage(rr, prefixKey, fullKey)
+            self.__addRaftStorage(rr, prefixKey, fullKey)
+
 
     '''
     PUBLIC FUNC
@@ -125,6 +151,8 @@ class Resolver:
             payload = dns.Record_SOA(mname=rvalue[0], rname=rvalue[1])
         elif rtype == "TXT":
             payload = dns.Record_TXT(data=[rvalue])
+        else:
+            raise "cannot parse line!"
         
         return dns.RRHeader(name=rname, 
                             type=self.__query_types[rtype], 
@@ -133,26 +161,27 @@ class Resolver:
     def __addLocalStorage(self, rr, prefixKey, fullKey):
         # Add to local RR store
         if self.__rr_local.get(prefixKey) is None:
-            self.__rr_local[prefixKey] = []
+            self.__rr_local[prefixKey] = [(rr, fullKey)]
         else:
             self.__rr_local[prefixKey].append((rr, fullKey))
 
-    def __addRaftStorage(self, rr, prefixKey, fullKey):
-        if self.__lock.tryAcquire('lock', sync=True):
+    def __addRaftStorage(self, rr, prefix_key, full_key):
+        #if self.__lock.tryAcquire('lock', sync=True):
 
-            if self.__rr_raft.get(prefix_key) is None:
-                self.__rr_raft.set(prefix_key, [], sync=True)
+        if self.__rr_raft.get(prefix_key) is None:
+            self.__rr_raft.set(prefix_key, [(rr, full_key)], sync=True)
+        else:
             rr_list = self.__rr_raft.get(prefix_key)
             rr_list.append((rr, full_key))
             self.__rr_raft.set(prefix_key, rr_list, sync=True)
 
-            if full_key not in self.__rr_dwnlds.keys():
-                # You know one download of this value has already occured!
-                self.__rr_dwnlds.set(full_key, 1, sync=True)
-            else:
-                prev_value = self.__rr_dwnlds[full_key]
-                self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
-            self.__lock.release('lock')
+        if full_key not in self.__rr_dwnlds.keys():
+            # You know one download of this value has already occured!
+            self.__rr_dwnlds.set(full_key, 1, sync=True)
+        else:
+            prev_value = self.__rr_dwnlds[full_key]
+            self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
+            #self.__lock.release('lock')
 
     # Read in entries from zone file and store locally.
     def __loadZones(self):
@@ -170,7 +199,7 @@ class Resolver:
             prefix_key = self._getPrefixKey(rr.name.name, rr.type)
             
             self.__addLocalStorage(rr, prefix_key, full_key)
-
+            self.__addRaftStorage(rr, prefix_key, full_key)
             
         return records
 
@@ -201,10 +230,25 @@ class Resolver:
     def __recordLookup(self, query):
         qname = query.name.name
         qtype = query.type
+        print time.time()
 
         answer_dict = {}
         authority = []
         additional = []
+
+        for k, v in self.__rr_local.iteritems():
+            sys.stdout.write("k: %s\n" %k)
+            # for p in v:
+            #     sys.stdout.write("payload:%s hash:%s\n" %(str(p[0].payload), str(p[1])))
+            # sys.stdout.flush()
+
+        print "RAFT:"
+        for k, v in self.__rr_raft.items():
+           sys.stdout.write("k: %s\n" %k)
+           # for p in v:
+           #     sys.stdout.write("payload:%s hash:%s\n" %(str(p[0].payload), str(p[1])))
+           # sys.stdout.flush()
+        
 
         prefix_key = self._getPrefixKey(qname, qtype)
         local_matches = self.__rr_local.get(prefix_key)
@@ -221,7 +265,7 @@ class Resolver:
             raft_matches_cpy = list(raft_matches)# TODO: use defer
 
             for (new_rr, full_key) in raft_matches:
-                if full_key in answer_dict.keys():
+                if answer_dict.get(full_key) is not None:
                     continue
 
                 # if record is not a duplicate, add it to answer_dict.
@@ -229,18 +273,18 @@ class Resolver:
 
                 # Also insert local copy!
                 if self.__rr_local.get(prefix_key) is None:
-                    self.__rr_local[prefix_key] = []
+                    self.__rr_local[prefix_key] = [(new_rr, full_key)]
                 self.__rr_local[prefix_key].append((new_rr, full_key))
 
-                if self.__lock.tryAcquire('lock', sync=True):
-                    prev_value = self.__rr_dwnlds[full_key]
-                    if prev_value+1 >= self.__num_nodes:
-                        self.__rr_dwnlds.pop(full_key, sync=True)
-                        raft_matches_cpy.remove((new_rr, full_key))
-                    else:
-                        self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
+                #if self.__lock.tryAcquire('lock', sync=True):
+                prev_value = self.__rr_dwnlds[full_key]
+                if prev_value+1 >= self.__num_nodes:
+                    self.__rr_dwnlds.pop(full_key, sync=True)
+                    raft_matches_cpy.remove((new_rr, full_key))
+                else:
+                    self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
 
-                    self.__lock.release('lock')
+                #    self.__lock.release('lock')
 
             # remove rrs downloaded among all nodes from rr_raft list
             self.__rr_raft.set(prefix_key, raft_matches_cpy, sync=True)
@@ -281,6 +325,7 @@ if __name__ =='__main__':
     node_name = args.node
     zone_file = args.zone
     config_file = args.config
+
 
     # Start resolver
     resolver = Resolver(node_name, zone_file, config_file)
