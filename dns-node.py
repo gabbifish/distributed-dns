@@ -147,7 +147,7 @@ class Resolver:
         elif rtype == "CNAME":
             payload = dns.Record_CNAME(name=rvalue)
         elif rtype == "MX":
-            payload = dns.Record_MX(name=rvalue[0], 
+            payload = dns.Record_MX(name=rvalue[0],
                                     preference=int(rvalue[1]))
         elif rtype == "NS":
             payload = dns.Record_NS(name=rvalue)
@@ -157,27 +157,29 @@ class Resolver:
             payload = dns.Record_TXT(data=[rvalue])
         else:
             raise "cannot parse line!"
-        
-        return dns.RRHeader(name=rname, 
-                            type=self.__query_types[rtype], 
+
+        return dns.RRHeader(name=rname,
+                            type=self.__query_types[rtype],
                             payload=payload)
-        
+
     def __addLocalStorage(self, rr, prefixKey):
         # Add to local RR store
+        # print
         with self.__lock:
             if self.__rr_local.get(prefixKey) is None:
-                self.__rr_local.set(prefixKey, [rr])
-            else:
-                rr_list = self.__rr_local.get(prefixKey)
-                rr_list.append(rr)
-                self.__rr_local.set(prefixKey, rr_list)
+                self.__rr_local.set(prefixKey, [], sync=True)
+            # else:
+            rr_list = self.__rr_local.get(prefixKey)
+            rr_list.append(rr)
+            self.__rr_local.set(prefixKey, rr_list)
+            print "new rr_list is now " + str(rr_list)
 
     # Read in entries from zone file and store locally.
     def __loadZones(self):
         print "Loading zonefile..."
         records = {}
         for line in self.__zoneLines():
-            
+
             rr = None
             try:
                 rr = self.__parseLine(line)
@@ -185,9 +187,9 @@ class Resolver:
                 print("Some error prevented parsing line: %s" %line)
             print str(rr)#, str(rr.payload)
             prefix_key = self._getPrefixKey(rr.name.name, rr.type)
-            
+
             self.__addLocalStorage(rr, prefix_key)
-            
+
         return records
 
     '''
@@ -239,7 +241,7 @@ class Resolver:
 
         print "Succeeded"
         return local_matches, authority, additional
-        
+
         answer = []
 
     '''
