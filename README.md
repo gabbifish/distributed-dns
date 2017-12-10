@@ -3,7 +3,7 @@ This implementation of a distributed DNS server cluster allows multiple nodes
 to respond to DNS queries, while maintaining consistent resource records among
 them and propogating the addition of new resource records to one node.
 
-Flotsam is a course project for the autumn 2017 offering of Stanford
+This is a course project for the autumn 2017 offering of Stanford
 [CS244B](http://cs244b.scs.stanford.edu).
 
 ## Node design
