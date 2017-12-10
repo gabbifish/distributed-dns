@@ -1,6 +1,6 @@
 import argparse
 import base64
-from cStringIO import StringIO
+from StringIO import StringIO
 from hashlib import sha256
 import json
 from pysyncobj import SyncObj
@@ -94,13 +94,8 @@ class Resolver:
                     rrheader.type,
                     base64.b64encode(hashval)))
 
-    def __getPrefixKey(self, name, qtype):
-        rdata = (name, qtype)
-        m = sha256()
-        m.update(repr(rdata))
-        hashval = m.digest()
-        return repr((str(name),
-                    qtype))
+    def _getPrefixKey(self, name, qtype):
+        return repr((name,qtype))
 
     # Read in entries from zone file and store locally.
     def __loadZones(self):
