@@ -35,13 +35,13 @@ class Resolver:
         self.__rr_local = {}
         self.__node, self.__other_nodes, self.__query_port, self.__num_nodes = self.__configure()
 
+        self.__lock = threading.RLock()
 
-
-        self.__rr_raft, self.__rr_dwnlds, self.__lock = self.__initDistributedDict()
+        self.__rr_raft, self.__rr_dwnlds = self.__initDistributedDict()
         self.__loadZones()
+
         self.__thread = threading.Thread(target=lambda: self.readFromStdin())
         self.__thread.setDaemon(True)
-        self.__lock = threading.Lock()
         self.__thread.start()
 
 
@@ -79,15 +79,16 @@ class Resolver:
             line = ""
             try:
                 line = sys.stdin.readline()
+                rr = self.__parseLine(line)
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
                 continue
-
-            rr = self.__parseLine(line)
+            print "Read line"
             prefixKey = self._getPrefixKey(rr.name.name, rr.type)
             fullKey = self.__getUniqueKey(rr)
             self.__addLocalStorage(rr, prefixKey, fullKey)
             self.__addRaftStorage(rr, prefixKey, fullKey)
+            print "Added line"
 
 
     '''
@@ -160,28 +161,29 @@ class Resolver:
         
     def __addLocalStorage(self, rr, prefixKey, fullKey):
         # Add to local RR store
-        if self.__rr_local.get(prefixKey) is None:
-            self.__rr_local[prefixKey] = [(rr, fullKey)]
-        else:
-            self.__rr_local[prefixKey].append((rr, fullKey))
+        with self.__lock:
+            if self.__rr_local.get(prefixKey) is None:
+                self.__rr_local[prefixKey] = [(rr, fullKey)]
+            else:
+                self.__rr_local[prefixKey].append((rr, fullKey))
 
     def __addRaftStorage(self, rr, prefix_key, full_key):
         #if self.__lock.tryAcquire('lock', sync=True):
-
-        if self.__rr_raft.get(prefix_key) is None:
-            self.__rr_raft.set(prefix_key, [(rr, full_key)], sync=True)
-        else:
-            rr_list = self.__rr_raft.get(prefix_key)
-            rr_list.append((rr, full_key))
-            self.__rr_raft.set(prefix_key, rr_list, sync=True)
-
-        if full_key not in self.__rr_dwnlds.keys():
-            # You know one download of this value has already occured!
-            self.__rr_dwnlds.set(full_key, 1, sync=True)
-        else:
-            prev_value = self.__rr_dwnlds[full_key]
-            self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
-            #self.__lock.release('lock')
+        with self.__lock:
+            if self.__rr_raft.get(prefix_key) is None:
+                self.__rr_raft.set(prefix_key, [(rr, full_key)], sync=True)
+            else:
+                rr_list = self.__rr_raft.get(prefix_key)
+                rr_list.append((rr, full_key))
+                self.__rr_raft.set(prefix_key, rr_list, sync=True)
+    
+            if full_key not in self.__rr_dwnlds.keys():
+                # You know one download of this value has already occured!
+                self.__rr_dwnlds.set(full_key, 1, sync=True)
+            else:
+                prev_value = self.__rr_dwnlds[full_key]
+                self.__rr_dwnlds.set(full_key, prev_value+1, sync=True)
+                #self.__lock.release('lock')
 
     # Read in entries from zone file and store locally.
     def __loadZones(self):
@@ -211,17 +213,16 @@ class Resolver:
     def __initDistributedDict(self):
         rr_raft = ReplDict()
         rr_dwnlds = ReplDict()
-        lock = ReplLockManager(3)
         config = SyncObjConf(appendEntriesUseBatch=True)
         syncObj = SyncObj(self.__node, self.__other_nodes,
-        consumers=[rr_raft, rr_dwnlds, lock], conf=config)
+        consumers=[rr_raft, rr_dwnlds], conf=config)
 
         print "Initializing Raft..."
         while not syncObj.isReady():
             continue
 
         print "Raft initialized!"
-        return rr_raft, rr_dwnlds, lock
+        return rr_raft, rr_dwnlds
 
     '''
     PRIVATE FUNC
@@ -242,16 +243,18 @@ class Resolver:
             #     sys.stdout.write("payload:%s hash:%s\n" %(str(p[0].payload), str(p[1])))
             # sys.stdout.flush()
 
-        print "RAFT:"
-        for k, v in self.__rr_raft.items():
-           sys.stdout.write("k: %s\n" %k)
+        #print "RAFT:"
+        #for k, v in self.__rr_raft.items():
+        #   sys.stdout.write("k: %s\n" %k)
            # for p in v:
            #     sys.stdout.write("payload:%s hash:%s\n" %(str(p[0].payload), str(p[1])))
            # sys.stdout.flush()
         
 
         prefix_key = self._getPrefixKey(qname, qtype)
-        local_matches = self.__rr_local.get(prefix_key)
+        local_matches = None
+        with self.__lock:
+            local_matches = self.__rr_local.get(prefix_key)
         if local_matches:
             for (new_rr, full_key) in local_matches:
                 answer_dict[full_key] = new_rr
@@ -260,7 +263,10 @@ class Resolver:
         # of full_keys->RR. Need to do quick lookup to see if any keys of
         # qname-qtype* exist; these should be added to our answers list if these
         # records aren't already there.
-        raft_matches = self.__rr_raft.get(prefix_key)
+        raft_matches = None
+        with self.__lock:
+            raft_matches = self.__rr_raft.get(prefix_key)
+
         if raft_matches:
             raft_matches_cpy = list(raft_matches)# TODO: use defer
 
