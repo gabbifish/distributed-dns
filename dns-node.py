@@ -77,6 +77,38 @@ class Resolver:
 
         return node, other_nodes, query_port, num_nodes
 
+    '''
+    PUBLIC FUNC
+    func getQueryPort() returns this node's query port--the one used by
+    command-line tools like dig (e.g. 'dig -p 10053 @127.0.0.1 example.com' if
+    query_port is 10053 in config file)
+    '''
+    def getQueryPort(self):
+        return self.__query_port
+
+    '''
+    func __initDistributedDict() sets up distributed dict for all resource
+    records among the nodes
+    '''
+    def __initDistributedDict(self):
+        rr_raft = ReplDict()
+        config = SyncObjConf(appendEntriesUseBatch=True)
+        syncObj = SyncObj(self.__node, self.__other_nodes,
+        consumers=[rr_raft], conf=config)
+
+        print "Initializing Raft..."
+        while not syncObj.isReady():
+            continue
+
+        print "Raft initialized!"
+        return rr_raft
+
+    '''
+    func readFromStdin() reads new resource records entered through a nodes'
+    STDIN. It's used to demonstrate the propogation of new resource records
+    among nodes in the DNS cluster. This function runs in its own thread to
+    allow for queries while new records are written.
+    '''
     def readFromStdin(self):
         while True:
             line = ""
@@ -93,15 +125,64 @@ class Resolver:
             # self.__addRaftStorage(rr, prefixKey, fullKey)
             print "Added line"
 
+    '''
+    func __getUniqueKey() generates a unique key for a resource record by
+    concatenating a RR's name, RR's type, and hash of the RR's payload. This is
+    used to uniquely identify a RR.
+    '''
+    def __getUniqueKey(self, rrheader):
+        encoder = StringIO()
+        m = sha256()
+        m.update(str(rrheader.payload))
+        hashval = m.digest()
+        return repr((rrheader.name.name,
+                    rrheader.type,
+                    base64.b64encode(hashval)))
 
     '''
-    PUBLIC FUNC
-    func getQueryPort() returns this node's query port--the one used by
-    command-line tools like dig (e.g. 'dig -p 10053 @127.0.0.1 example.com' if
-    query_port is 10053 in config file)
+    func __getPrefixKey() generates a key for all resource records of a unique
+    RR name and RR type combination. This is used for performing queries over
+    a set of RRs with the same name and type.
     '''
-    def getQueryPort(self):
-        return self.__query_port
+    def _getPrefixKey(self, name, qtype):
+        return repr((name,qtype))
+
+    '''
+    func __addLocalStorage() adds resource records to the local data store.
+    The local data store is a map of prefix keys to a list of tuples (resource
+    record, unique hash of rr)
+    '''
+    def __addLocalStorage(self, rr, prefixKey):
+        # Add to local RR store
+        with self.__lock:
+            if self.__rr_local.get(prefixKey) is None:
+                self.__rr_local.set(prefixKey, [], sync=True)
+            # else:
+            rr_list = self.__rr_local.get(prefixKey)
+            rr_list.append(rr)
+            self.__rr_local.set(prefixKey, rr_list)
+
+    '''
+    func __loadZones() iterates over entries in the zonefile and creates
+    Record_X objects for resource record type X. It adds these entries to the
+    raft RR datastore for propogation to other DNS nameserver nodes.
+    '''
+    def __loadZones(self):
+        print "Loading zonefile..."
+        records = {}
+        for line in self.__zoneLines():
+
+            rr = None
+            try:
+                rr = self.__parseLine(line)
+            except Exception:
+                print("Some error prevented parsing line: %s" %line)
+            print str(rr)#, str(rr.payload)
+            prefix_key = self._getPrefixKey(rr.name.name, rr.type)
+
+            self.__addLocalStorage(rr, prefix_key)
+
+        return records
 
     '''
     PRIVATE FUNC
@@ -116,18 +197,10 @@ class Resolver:
             line = line.rstrip()
             yield line
 
-    def __getUniqueKey(self, rrheader):
-        encoder = StringIO()
-        m = sha256()
-        m.update(str(rrheader.payload))
-        hashval = m.digest()
-        return repr((rrheader.name.name,
-                    rrheader.type,
-                    base64.b64encode(hashval)))
-
-    def _getPrefixKey(self, name, qtype):
-        return repr((name,qtype))
-
+    '''
+    func __parseLines() processes lines in the zonefile, parsing them into
+    resource records and returning the resource record given by a zonefile line.
+    '''
     def __parseLine(self, line):
         tokens = line.split(None, 2)
         # reject if incorrectly formatted.
@@ -162,58 +235,8 @@ class Resolver:
                             type=self.__query_types[rtype],
                             payload=payload)
 
-    def __addLocalStorage(self, rr, prefixKey):
-        # Add to local RR store
-        # print
-        with self.__lock:
-            if self.__rr_local.get(prefixKey) is None:
-                self.__rr_local.set(prefixKey, [], sync=True)
-            # else:
-            rr_list = self.__rr_local.get(prefixKey)
-            rr_list.append(rr)
-            self.__rr_local.set(prefixKey, rr_list)
-            print "new rr_list is now " + str(rr_list)
-
-    # Read in entries from zone file and store locally.
-    def __loadZones(self):
-        print "Loading zonefile..."
-        records = {}
-        for line in self.__zoneLines():
-
-            rr = None
-            try:
-                rr = self.__parseLine(line)
-            except Exception:
-                print("Some error prevented parsing line: %s" %line)
-            print str(rr)#, str(rr.payload)
-            prefix_key = self._getPrefixKey(rr.name.name, rr.type)
-
-            self.__addLocalStorage(rr, prefix_key)
-
-        return records
-
     '''
-    PRIVATE FUNC
-    func _initDistributedDict() sets up distributed dict for requests not yet
-    written locally.
-    '''
-    def __initDistributedDict(self):
-        rr_raft = ReplDict()
-        config = SyncObjConf(appendEntriesUseBatch=True)
-        syncObj = SyncObj(self.__node, self.__other_nodes,
-        consumers=[rr_raft], conf=config)
-
-        print "Initializing Raft..."
-        while not syncObj.isReady():
-            continue
-
-        print "Raft initialized!"
-        return rr_raft
-
-
-    '''
-    PRIVATE FUNC
-    func _recordLookup() looks up RRs that match a query.
+    func __recordLookup() looks up RRs that match a query.
     '''
     def __recordLookup(self, query):
         qname = query.name.name
@@ -245,7 +268,6 @@ class Resolver:
         answer = []
 
     '''
-    PUBLIC FUNC
     func query() returns RRs that match a query.
     '''
     def query(self, query, timeout=None):
