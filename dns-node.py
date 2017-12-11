@@ -111,14 +111,24 @@ class Resolver:
             line = ""
             try:
                 line = sys.stdin.readline()
-                rr = self.__parseLine(line)
+                action, rr = self.__parseLine(line)
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
                 continue
             print "Read line into resource record %s." % str(rr)
             prefixKey = self._getPrefixKey(rr.name.name, rr.type)
-            self.__addLocalStorage(rr, prefixKey)
-            print "Added resource record for this entry."
+            if action == "ADD:":
+                self.__addLocalStorage(rr, prefixKey)
+                print "Added resource record for this entry."
+            elif action == "REMOVE:"
+                self.__removeLocalStorage(rr, prefixKey)
+                print "Removed resource record for this entry."
+
+    def __determineAction(self):
+        action, rr_entry = line.split(None, 1)
+        if action != "ADD:" and action != "REMOVE:":
+            raise Exception("Incorrectly formatted entry or removal of resource record!")
+        return action, rr_entry
 
     '''
     func __getUniqueKey() generates a unique key for a resource record by
@@ -143,18 +153,31 @@ class Resolver:
         return repr((name,qtype))
 
     '''
-    func __addLocalStorage() adds resource records to the local data store.
-    The local data store is a map of prefix keys to a list of tuples (resource
+    func __addLocalStorage() adds resource records to the raft data store.
+    The raft data store is a map of prefix keys to a list of tuples (resource
     record, unique hash of rr)
     '''
     def __addLocalStorage(self, rr, prefixKey):
-        # Add to local RR store
+        # Add to RR store
         with self.__lock:
             if self.__rr_local.get(prefixKey) is None:
                 self.__rr_local.set(prefixKey, [], sync=True)
-            # else:
             rr_list = self.__rr_local.get(prefixKey)
             rr_list.append(rr)
+            self.__rr_local.set(prefixKey, rr_list)
+
+    '''
+    func __removeLocalStorage() removes resource records to the raft data store.
+    The raft data store is a map of prefix keys to a list of tuples (resource
+    record, unique hash of rr)
+    '''
+    def __removeLocalStorage(self, rr, prefixKey):
+        # Remove from RR store
+        with self.__lock:
+            if self.__rr_local.get(prefixKey) is None:
+                return
+            rr_list = self.__rr_local.get(prefixKey)
+            rr_list.remove(rr)
             self.__rr_local.set(prefixKey, rr_list)
 
     '''
