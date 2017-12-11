@@ -48,7 +48,7 @@ dig -p 10053 @localhost example.com MX
 To test the DNS server's efficiency, run the metrics-collection.py script in the
 metrics directory.
 
-### Adding and Removing DNS nodes at runtime
+### Adding and removing resource records at runtime
 To add a resource record to a node, enter the following in a node proc's STDIN, where the whitespace between the fields are spaces or tabs. The first field is the action performed (ADD: or REMOVE:) and the following fields are resource name, resource type, and resource value/payload.
 ```
 ADD:  newdomain.com  A  1.3.3.7  
