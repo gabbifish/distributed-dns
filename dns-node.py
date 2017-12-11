@@ -20,11 +20,11 @@ class Resolver:
     '''
     Initialize resolver
     '''
-    def __init__(self, node_name, zone_file, config_file, async=False):
+    def __init__(self, node_name, zone_file, config_file, silent):
         self.__node_name = node_name
         self.__zone_file = zone_file
         self.__config_file = config_file
-        self.__async = async
+        self.__silent = silent
         self.__query_types = {
             "A" : dns.A,
             "CNAME" : dns.CNAME,
@@ -93,11 +93,13 @@ class Resolver:
         syncObj = SyncObj(self.__node, self.__other_nodes,
         consumers=[rr_raft], conf=config)
 
-        print "Initializing Raft..."
+        if not self.__silent:
+            print "Initializing Raft..."
         while not syncObj.isReady():
             continue
 
-        print "Raft initialized!"
+        if not self.__silent:
+            print "Raft initialized!"
         return rr_raft
 
     '''
@@ -114,16 +116,19 @@ class Resolver:
                 action, entry = self.__determineAction(line)
                 rr = self.__parseLine(entry)
             except Exception:
-                print("Some error prevented parsing line: %s" %line)
+                print "Some error prevented parsing line: %s" % line
                 continue
-            print "Read line into resource record %s." % str(rr)
+            if not self.__silent:
+                print "Read line into resource record %s." % str(rr)
             prefixKey = self._getPrefixKey(rr.name.name, rr.type)
             if action == "ADD:":
                 self.__addLocalStorage(rr, prefixKey)
-                print "Added resource record for this entry."
+                if not self.__silent:
+                    print "Added resource record for this entry."
             elif action == "REMOVE:":
                 self.__removeLocalStorage(rr, prefixKey)
-                print "Removed resource record for this entry."
+                if not self.__silent:
+                    print "Removed resource record for this entry."
 
 
     '''
@@ -133,7 +138,8 @@ class Resolver:
     def __determineAction(self, line):
         action, rr_entry = line.split(None, 1)
         if action != "ADD:" and action != "REMOVE:":
-            raise Exception("Incorrectly formatted entry or removal of resource record!")
+
+            raise Exception("Incorrectly formatted entry or removal of resource record in line %s" % line)
         return action, rr_entry
 
     '''
@@ -191,7 +197,8 @@ class Resolver:
     raft RR datastore for propogation to other DNS nameserver nodes.
     '''
     def __loadZones(self):
-        print "Loading zonefile..."
+        if not self.__silent:
+            print "Loading zonefile..."
         records = {}
         for line in self.__zoneLines():
 
@@ -276,14 +283,11 @@ class Resolver:
         local_matches = None
 
         with self.__lock:
-            if self.__async:
-                local_matches = self.__rr_local.rawData().get(prefix_key, None)
-            else:
-                local_matches = self.__rr_local.get(prefix_key, None)
-
+            local_matches = self.__rr_local.rawData().get(prefix_key, None)
 
         if local_matches is None: # corresponding RRs have been found
-            print "DomainError: %s" %qname
+            if not self.__silent:
+                print "DomainError: %s" % qname
             raise dns.DomainError
 
         return local_matches, authority, additional
@@ -304,15 +308,12 @@ if __name__ =='__main__':
                         help='this node\'s zonefile')
     parser.add_argument('-c', '--config', required=True,
                         help='this DNS server cluster\'s config file')
-    parser.add_argument('-a', '--async', action='store_true', default=True,
-                        help='this DNS server cluster\'s config file')
+    parser.add_argument('-s', '--silent', action='store_true', default=False,
+                        help='suppress print statements')
     args = parser.parse_args()
-    node_name = args.node
-    zone_file = args.zone
-    config_file = args.config
 
     # Start resolver
-    resolver = Resolver(node_name, zone_file, config_file, args.async)
+    resolver = Resolver(args.node, args.zone, args.config, args.silent)
     # get port for resolver
     port = resolver.getQueryPort()
 
@@ -325,5 +326,6 @@ if __name__ =='__main__':
     reactor.listenUDP(port, protocol)
     reactor.listenTCP(port, factory)
 
-    print "Starting DNS server on port %d..." % port
+    if not args.silent:
+        print "Starting DNS server on port %d..." % port
     reactor.run()

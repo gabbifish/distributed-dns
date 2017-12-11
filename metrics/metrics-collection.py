@@ -6,7 +6,7 @@ import multiprocessing
 import Queue
 
 def startNode(node_id):
-    proc_string = "python ../dns-node.py -n %s -z ../zf/zf%s.txt -c ../dns-config.json -a" % (node_id, node_id)
+    proc_string = "python dns-node.py -n %s -z zf/zf%s.txt -c dns-config.json -s" % (node_id, node_id)
     subprocess.check_output(proc_string, shell=True)
 
 def runDigBenchmark(dig_str, queue):
@@ -46,7 +46,7 @@ if __name__ =='__main__':
     for i in range(0, 3):
         new_node = threading.Thread(target=startNode, args=[str(i+1)])
         nodes.append(new_node)
-        new_node.setDaemon(True)
+        # new_node.setDaemon(True)
         new_node.start()
 
     time.sleep(11)
