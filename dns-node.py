@@ -174,8 +174,11 @@ class Resolver:
             if self.__rr_local.get(prefixKey) is None:
                 self.__rr_local.set(prefixKey, [], sync=True)
             rr_list = self.__rr_local.get(prefixKey)
-            rr_list.append(rr)
-            self.__rr_local.set(prefixKey, rr_list)
+            if rr in rr_list:
+                return
+            else:
+                rr_list.append(rr)
+                self.__rr_local.set(prefixKey, rr_list)
 
     '''
     func __removeLocalStorage() removes resource records to the raft data store.
@@ -189,7 +192,10 @@ class Resolver:
                 return
             rr_list = self.__rr_local.get(prefixKey)
             rr_list.remove(rr)
-            self.__rr_local.set(prefixKey, rr_list)
+            if len(rr_list) > 0:
+                self.__rr_local.set(prefixKey, rr_list)
+            else:
+                self.__rr_local.pop(prefixKey)
 
     '''
     func __loadZones() iterates over entries in the zonefile and creates
@@ -288,7 +294,7 @@ class Resolver:
         if local_matches is None: # corresponding RRs have been found
             if not self.__silent:
                 print "DomainError: %s" % qname
-            raise dns.DomainError
+            return error.DomainError
 
         return local_matches, authority, additional
 
@@ -296,7 +302,11 @@ class Resolver:
     func query() returns RRs that match a query.
     '''
     def query(self, query, timeout=None):
-        return defer.succeed(self.__recordLookup(query))
+        query_result = self.__recordLookup(query)
+        if query_result is not error.DomainError:
+            return defer.succeed(self.__recordLookup(query))
+        else:
+            return defer.fail(error.DomainError())
 
 
 if __name__ =='__main__':
@@ -318,7 +328,7 @@ if __name__ =='__main__':
     port = resolver.getQueryPort()
 
     factory = server.DNSServerFactory(
-        clients=[resolver, client.Resolver(resolv='/etc/resolv.conf')]
+        clients=[resolver]
     )
     protocol = dns.DNSDatagramProtocol(controller=factory)
 

@@ -36,8 +36,9 @@ To run a node, run
 ./dns-node -n X -c dns-config.json -z zone-files/zfX.txt
 ```
 where X is the number of the node (and its corresponding zonefile) you want to
-start. Because raft will not work on a single node, a running node will hang at
-`Initializing raft...` until another node is started up.
+start. Because raft will not work on a minority of nodes, a running node will
+hang at `Initializing raft...` until over half the nodes in the cluster have
+started.
 
 To test the DNS server as it runs locally, you can run a query over dig using
 the node's query port.
