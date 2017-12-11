@@ -258,10 +258,7 @@ class Resolver:
             print "DomainError: %s" %qname
             raise dns.DomainError
 
-        if len(answer_dict) > 0: # corresponding RRs have been found
-            return answer_dict.values(), authority, additional
-        else:
-            raise dns.DomainError
+        return local_matches, authority, additional
 
     '''
     func query() returns RRs that match a query.
@@ -279,13 +276,12 @@ if __name__ =='__main__':
                         help='this node\'s zonefile')
     parser.add_argument('-c', '--config', required=True,
                         help='this DNS server cluster\'s config file')
-    parser.add_argument('-a', '--async', action='store_true', default=False,
+    parser.add_argument('-a', '--async', action='store_true', default=True,
                         help='this DNS server cluster\'s config file')
     args = parser.parse_args()
     node_name = args.node
     zone_file = args.zone
     config_file = args.config
-
 
     # Start resolver
     resolver = Resolver(node_name, zone_file, config_file, args.async)
