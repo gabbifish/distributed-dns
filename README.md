@@ -1,7 +1,8 @@
 # Distributed DNS Server Cluster
 This implementation of a distributed DNS server cluster allows multiple nodes
-to respond to DNS queries, while maintaining consistent resource records among
-them and propogating the addition of new resource records to one node.
+(nameservers) to respond to direct DNS queries, while maintaining consistent
+resource records among them and propogating the addition of new resource
+records to one node.
 
 This is a course project for the autumn 2017 offering of Stanford
 [CS244B](http://cs244b.scs.stanford.edu).
@@ -28,6 +29,8 @@ The DNS server relies on the dns-config file, which is parsed as json. This
 file specifies which nodes use which ip:port pairs for querying and
 participating in raft.
 
+### Starting DNS nameserver nodes
+
 To run a node, run
 ```
 ./dns-node -n X -c dns-config.json -z zone-files/zfX.txt
@@ -36,11 +39,22 @@ where X is the number of the node (and its corresponding zonefile) you want to
 start. Because raft will not work on a single node, a running node will hang at
 `Initializing raft...` until another node is started up.
 
-To test the DNS server, you can run a query over dig using the node's query
-port.
+To test the DNS server as it runs locally, you can run a query over dig using
+the node's query port.
 ```
-dig -p 10053 @127.0.0.1 example.com MX
+dig -p 10053 @localhost example.com MX
 ```
 
 To test the DNS server's efficiency, run the metrics-collection.py script in the
 metrics directory.
+
+### Adding and Removing DNS nodes at runtime
+To add a resource record to a node, enter the following in a node proc's STDIN, where the whitespace between the fields are spaces or tabs.
+```
+ADD:  newdomain.com  A  1.3.3.7  
+```
+
+Conversely, to remove resource records, enter the following:
+```
+REMOVE:  newdomain.com  A  1.3.3.7  
+```

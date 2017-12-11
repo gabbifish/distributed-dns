@@ -111,7 +111,8 @@ class Resolver:
             line = ""
             try:
                 line = sys.stdin.readline()
-                action, rr = self.__parseLine(line)
+                action, entry = self.__determineAction(line)
+                rr = self.__parseLine(entry)
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
                 continue
@@ -120,11 +121,16 @@ class Resolver:
             if action == "ADD:":
                 self.__addLocalStorage(rr, prefixKey)
                 print "Added resource record for this entry."
-            elif action == "REMOVE:"
+            elif action == "REMOVE:":
                 self.__removeLocalStorage(rr, prefixKey)
                 print "Removed resource record for this entry."
 
-    def __determineAction(self):
+
+    '''
+    func __determineAction() parses a STDIN line for whether it is a RR addition
+    or removal.
+    '''
+    def __determineAction(self, line):
         action, rr_entry = line.split(None, 1)
         if action != "ADD:" and action != "REMOVE:":
             raise Exception("Incorrectly formatted entry or removal of resource record!")
@@ -154,8 +160,7 @@ class Resolver:
 
     '''
     func __addLocalStorage() adds resource records to the raft data store.
-    The raft data store is a map of prefix keys to a list of tuples (resource
-    record, unique hash of rr)
+    The raft data store is a map of prefix keys to resource records.
     '''
     def __addLocalStorage(self, rr, prefixKey):
         # Add to RR store
