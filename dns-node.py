@@ -12,7 +12,6 @@ from pysyncobj.batteries import ReplDict, ReplLockManager
 import sys
 import thread
 import threading
-import time
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
@@ -173,7 +172,6 @@ class Resolver:
                 rr = self.__parseLine(line)
             except Exception:
                 print("Some error prevented parsing line: %s" %line)
-            print str(rr)#, str(rr.payload)
             prefix_key = self._getPrefixKey(rr.name.name, rr.type)
 
             self.__addLocalStorage(rr, prefix_key)
@@ -249,7 +247,6 @@ class Resolver:
         prefix_key = self._getPrefixKey(qname, qtype)
         local_matches = None
 
-        # print "Query for %s" %qname
         with self.__lock:
             if self.__async:
                 local_matches = self.__rr_local.rawData().get(prefix_key, None)
@@ -261,7 +258,6 @@ class Resolver:
             print "DomainError: %s" %qname
             raise dns.DomainError
 
-        # print "Succeeded"
         return local_matches, authority, additional
 
         answer = []
