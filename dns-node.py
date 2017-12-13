@@ -40,7 +40,7 @@ class Resolver:
 
         self.__rr_local = self.__initDistributedDict()
         self.__loadZones()
-
+        self.__count = 0
         self.__stdin_thread = threading.Thread(target=lambda: self.readFromStdin())
         self.__stdin_thread.setDaemon(True)
         self.__stdin_thread.start()
@@ -303,8 +303,10 @@ class Resolver:
     '''
     def query(self, query, timeout=None):
         query_result = self.__recordLookup(query)
+        self.__count += 1
+        print self.__count
         if query_result is not error.DomainError:
-            return defer.succeed(self.__recordLookup(query))
+            return defer.succeed(query_result)
         else:
             return defer.fail(error.DomainError())
 
