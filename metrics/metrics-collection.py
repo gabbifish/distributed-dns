@@ -43,26 +43,39 @@ def runQueryThreads(dig_str, multithreaded=True):
     print "This test recorded a rate of %d queries/sec." % total_queries
 
 def runQueryEquallyDistributed(num_nodes):
-    nodes_queryports = {
-        0: 10053,
-        1: 10063,
-        2: 10073,
-        3: 10083,
-        4: 10093,
-        5: 11003,
-        6: 11013,
-        7: 11023,
-        8: 11033,
-        9: 11043,
-        10: 11053,
-        11: 11063
-    }
-    for node in range(0, num_nodes):
-        query_str = "dig -p %d @127.0.0.1 example.com MX" % nodes_queryports[node]
-        runQueryThreads(query_str)
+    nodes = [
+        ("172.31.18.0", 10053),
+        ("172.31.25.138", 10063),
+        ("172.31.31.36", 10073)
+    ]
+        # 3: 10083,
+        # 4: 10093,
+        # 5: 11003,
+        # 6: 11013,
+        # 7: 11023,
+        # 8: 11033,
+        # 9: 11043,
+        # 10: 11053,
+        # 11: 11063
+    # }
+    queries = []
+    for i in xrange(1000):
+        for node in xrange(0, num_nodes):
+            queries.append(["dig", "-p",  nodes[0][1], "@%s" %(nodes[0][0]), "example.com", "MX"])
+
+    digs = []
+    start = time.time()
+    for q in queries:
+        digs.append(subprocess.Popen(q))
+
+    for p in digs:
+        p.wait()
+    end = time.time()
+    print "Did 3000 queries in %f seconds" %(end - start)
+
 
 if __name__ =='__main__':
-    N = 12
+    N = 3
 
     # nodes = []
     # for node_id in range(0, N):
