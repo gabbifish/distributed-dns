@@ -293,10 +293,6 @@ class Resolver:
         with self.__lock:
             local_matches = self.__rr_local.rawData().get(prefix_key, None)
 
-        global num_responses
-        num_responses += 1
-        print num_responses
-
         if local_matches is None: # corresponding RRs have been found
             if not self.__silent:
                 print "DomainError: %s" % qname
@@ -310,7 +306,7 @@ class Resolver:
     def query(self, query, timeout=None):
         query_result = self.__recordLookup(query)
         self.__count += 1
-        print self.__count
+        #print self.__count
         if query_result is not error.DomainError:
             return defer.succeed(query_result)
         else:
