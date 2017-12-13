@@ -15,6 +15,8 @@ import threading
 from twisted.internet import reactor, defer
 from twisted.names import client, dns, error, server
 
+num_responses = 0
+
 class Resolver:
 
     '''
@@ -291,11 +293,15 @@ class Resolver:
         with self.__lock:
             local_matches = self.__rr_local.rawData().get(prefix_key, None)
 
+        global num_responses
+        num_responses += 1
+        print num_responses
+
         if local_matches is None: # corresponding RRs have been found
             if not self.__silent:
                 print "DomainError: %s" % qname
             return error.DomainError
-
+        
         return local_matches, authority, additional
 
     '''
